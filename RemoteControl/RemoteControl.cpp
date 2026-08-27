@@ -1,8 +1,9 @@
 //服务器端
 #include "serve.h"
-
-#pragma comment(lib, "ws2_32.lib") 
 int main(){
+    // ⭐ 设置控制台为 UTF-8 编码
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
     //服务器网络编程
     /*1.初始化网络环境
     申请"使用网络功能"的许可证, WSAStartup 是第一步申请服务;
@@ -34,7 +35,7 @@ int main(){
 
     SOCKADDR_IN server_addr; //声明一个结构体变量，用来存储服务器的地址和端口信息
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(99888); // 使用 htons() 函数将端口号转换为网络字节序
+    server_addr.sin_port = htons(9988); // 使用 htons() 函数将端口号转换为网络字节序
     server_addr.sin_addr.S_un.S_addr = inet_addr("0.0.0.0"); // 0.0.0.0 监听服务器上所有的IP（电脑上可能不只有一张网卡；
     if(bind(server_socket, (sockaddr*)&server_addr, sizeof(SOCKADDR_IN)) == SOCKET_ERROR){
         printf("绑定地址和端口失败，错误码：%d\n", WSAGetLastError());
@@ -68,5 +69,6 @@ int main(){
     send(client_socket, buffer, sizeof(buffer), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
     //关闭
     WSACleanup(); //释放网络资源
+    system("pause");
     return 0;
 }
