@@ -1,5 +1,5 @@
 //服务器端
-#include "serve.h"
+#include "serve.hpp"
 int main(){
     // ⭐ 设置控制台为 UTF-8 编码
     SetConsoleOutputCP(CP_UTF8);
@@ -65,14 +65,21 @@ int main(){
     while(true){
         //返回接收数据的长度, 接收的内容存在buffer中0是接收标志，表示默认接收，阻塞
         int len = recv(client_socket, buffer, sizeof(buffer), 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
+
         if(len > 0){
             buffer[len] = '\0'; //在接收到的数据后面加上字符串结束符
-            printf("接收到客户端发送的数据：%s\n", buffer);
+            Packet* packet = ParsePacket(buffer, len);
+            std::cout << "接收到客户端发送的数据" << packet->body << std::endl;
+            std::cout << "---------------------" << std::endl;
+            free(packet);
+            // fwrite(buffer, 1, len, stdout); //把缓冲区中的数据写入到标准输出流中
+            // fwrite("\r\n---\r\n", 1, 8, stdout); //换行
         }
 
         //6.发送数据
-        send(client_socket, buffer, sizeof(buffer), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
-        std::cout << "发送数据的内容为：" << buffer << std::endl;
+        //send(client_socket, buffer, sizeof(buffer), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
+        //std::cout << "发送数据的内容为：" << buffer << std::endl;
+        Sleep(1000); //延时100毫秒
     }
     //关闭套接字
     closesocket(client_socket); //关闭客户端套接字

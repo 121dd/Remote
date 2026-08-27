@@ -1,8 +1,4 @@
-#include <stdio.h>
-#include <iostream>
-#include <Windows.h> //操作系统接口
-
-#pragma comment(lib, "ws2_32.lib") //链接库文件，Windows Socket 2.0 库文件  
+#include "client_head.h"
 
 int main(){
     // ⭐ 设置控制台为 UTF-8 编码
@@ -35,20 +31,34 @@ int main(){
     std::cout << "连接服务器成功"<< std::endl;
     std::cout <<"服务器IP地址:"<< inet_ntoa(server_addr.sin_addr) <<"端口:"<< ntohs(server_addr.sin_port) << std::endl;
     //3.发送数据 connet后就连接成功
-    char buffer[1024] = "hello, server!";
+    
+    char buffer[1024] = {0};
+    char recv_buffer[1024] = {0};
+    int count = 0;
     while(true){
-        std::cout << "请输入要发送的数据：";
-        fgets(buffer, sizeof(buffer), stdin);
-        send(client_socket, buffer, strlen(buffer), 0);//发送给客户端的缓冲区
+        //准备发送的数据 sprintf:把一个格式化的字符串写入一个字符数组中
+        sprintf_s(buffer, sizeof(buffer), "packet:%d", count++);
+        // std::cout << "请输入要发送的数据：";
+        // fgets(buffer, sizeof(buffer), stdin);
+        //创建数据包,这种情况下malloc比new好，因为结构体Packet使用的是柔性结构，得根据数据去确定他的内存空间
+        Packet* packet = (Packet*)malloc(sizeof(PacketHeader) + strlen(buffer) + 1);//new一块区域
+        packet->header.magic = 0x55AA77CC; 
+        packet->header.cmd = 2000;
+        packet->header.body_len = strlen(buffer) + 1; //数据体长度
+        memcpy(packet->body, buffer, packet->header.body_len); //把buffer中的数据拷贝到packet的body中
+
+        send(client_socket, (char*)&packet->header.magic, packet->header.body_len + sizeof(PacketHeader), 0);//发送给客户端的缓冲区
+        free(packet); //释放内存
+        std::cout << "发送数据的内容为：" << buffer << std::endl;
         //再由网络自动将数据发送给服务器
 
         //等待接收数据
-        char recv_buffer[1024] = {0};
-        int len = recv(client_socket, recv_buffer, sizeof(recv_buffer), 0);
-        if(len > 0){
-            recv_buffer[len] = '\0'; //在接收到的数据后面加上字符串结束符
-            std::cout << "接收到服务器数据：" << recv_buffer << std::endl;
-        }
+        // int len = recv(client_socket, recv_buffer, sizeof(recv_buffer), 0);
+        // if(len > 0){
+        //     recv_buffer[len] = '\0'; //在接收到的数据后面加上字符串结束符
+        //     std::cout << "接收到服务器数据：" << recv_buffer << std::endl;
+        // }
+        Sleep(100); //延时100毫秒
     }
     //关闭套接字
     closesocket(client_socket); //关闭客户端套接字
