@@ -15,6 +15,7 @@ int main(){
 
     WSAStartup(MAKEWORD(2, 2), &wsaData);就是请求权限，就可以创建套接字，完整的 Windows Socket 网络编程用户权限
     */
+   
 
     WSADATA wsaData; //声明一个结构体变量，用来存储 Windows Socket 的“启动信息, 即一份申请表
     WSAStartup(MAKEWORD(2, 2), &wsaData); //向 Windows 申请“我要使用网络功能”，并完成初始化
@@ -63,10 +64,14 @@ int main(){
     char buffer[1024] = {0};//非接收窗口，而是缓冲区（从接收窗口中拷贝到缓冲区中），recv()函数是阻塞的，直到有数据到来，才会继续往下执行
     //返回接收数据的长度, 接收的内容存在buffer中0是接收标志，表示默认接收
     int len = recv(client_socket, buffer, sizeof(buffer), 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
-    printf("接收到客户端发送的数据：%s\n", buffer);
+    if(len > 0){
+        buffer[len] = '\0'; //在接收到的数据后面加上字符串结束符
+        printf("接收到客户端发送的数据：%s\n", buffer);
+    }
 
     //6.发送数据
     send(client_socket, buffer, sizeof(buffer), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
+    std::cout << "发送数据的内容为：" << buffer << std::endl;
     //关闭
     WSACleanup(); //释放网络资源
     system("pause");

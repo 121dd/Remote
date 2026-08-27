@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <iostream>
-#include<Windows.h> //操作系统接口
+#include <Windows.h> //操作系统接口
 
 #pragma comment(lib, "ws2_32.lib") //链接库文件，Windows Socket 2.0 库文件  
 
@@ -32,15 +32,18 @@ int main(){
         printf("连接服务器失败，错误码：%d\n", WSAGetLastError());
         return -1;
     }  
-    std::cout << "连接服务器成功" <<"服务器IP地址:"<< inet_ntoa(server_addr.sin_addr) <<"端口:"<< ntohs(server_addr.sin_port) << std::endl;
+    std::cout << "连接服务器成功"<< std::endl;
+    std::cout <<"服务器IP地址:"<< inet_ntoa(server_addr.sin_addr) <<"端口:"<< ntohs(server_addr.sin_port) << std::endl;
     //3.发送数据 connet后就连接成功
     char buffer[1024] = "hello, server!";
+    std::cout << "请输入要发送的数据：";
+    std::cin >> buffer; //从控制台输入数据
     char recv_buffer[1024] = {0};
     send(client_socket, buffer, strlen(buffer), 0);//发送给缓冲区
     //等待接收数据
-    recv(client_socket, recv_buffer, sizeof(recv_buffer), 0);
-    if(strlen(recv_buffer) > 0){
-        printf("接收到服务器数据：%s\n", recv_buffer);
+    int len = recv(client_socket, recv_buffer, sizeof(recv_buffer), 0);
+    if(len > 0){
+        std::cout << "接收到服务器数据：" << recv_buffer << std::endl;
     }
     WSACleanup(); //释放 Winsock 资源
     system("pause");
