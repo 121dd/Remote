@@ -76,11 +76,10 @@ int main(){
         //BECVG_BUFFER_SIZE - index代表缓冲区的大小
         int len = recv(client_socket, buffer + index, BECV_BUFFER_SIZE - index, 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
         if(len > 0){
-            index += len;//缓冲区有效数字的z总长度
+            index += len;//缓冲区有效数字的总长度
             Packet* packet = ParsePacket(buffer, index);
-            packet_len = packet->header.body_len + sizeof(PacketHeader);
-            index = index - packet_len;//把一个包拿走后剩下的长度
-            memmove(buffer, buffer + packet_len, index);//移动把buffer + index
+            index = index - GetPacketLen(packet);//把一个包拿走后剩下的长度
+            memmove(buffer, buffer + GetPacketLen(packet), index);//移动把buffer + index
             std::cout << "接收到客户端发送的数据" << packet->body << std::endl;
             std::cout << "---------------------" << std::endl;
             free(packet);
@@ -88,9 +87,10 @@ int main(){
         //6.发送数据
         //send(client_socket, buffer, sizeof(buffer), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
         //std::cout << "发送数据的内容为：" << buffer << std::endl;
-        Sleep(1000); //延时100毫秒
+        Sleep(500); //延时100毫秒
     }
     //关闭套接字
+    delete[] buffer;
     closesocket(client_socket); //关闭客户端套接字
     closesocket(server_socket); //关闭服务器套接字
     //关闭

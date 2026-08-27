@@ -47,3 +47,9 @@ Packet* ParsePacket(char* buffer, int len){
     }
     return NULL;
 }
+
+int GetPacketLen(Packet* pck){
+    if(pck != NULL){
+        return pck->header.body_len + sizeof(PacketHeader);
+    }
+}
