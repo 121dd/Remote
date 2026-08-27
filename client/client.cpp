@@ -36,15 +36,22 @@ int main(){
     std::cout <<"服务器IP地址:"<< inet_ntoa(server_addr.sin_addr) <<"端口:"<< ntohs(server_addr.sin_port) << std::endl;
     //3.发送数据 connet后就连接成功
     char buffer[1024] = "hello, server!";
-    std::cout << "请输入要发送的数据：";
-    std::cin >> buffer; //从控制台输入数据
-    char recv_buffer[1024] = {0};
-    send(client_socket, buffer, strlen(buffer), 0);//发送给缓冲区
-    //等待接收数据
-    int len = recv(client_socket, recv_buffer, sizeof(recv_buffer), 0);
-    if(len > 0){
-        std::cout << "接收到服务器数据：" << recv_buffer << std::endl;
+    while(true){
+        std::cout << "请输入要发送的数据：";
+        fgets(buffer, sizeof(buffer), stdin);
+        send(client_socket, buffer, strlen(buffer), 0);//发送给客户端的缓冲区
+        //再由网络自动将数据发送给服务器
+
+        //等待接收数据
+        char recv_buffer[1024] = {0};
+        int len = recv(client_socket, recv_buffer, sizeof(recv_buffer), 0);
+        if(len > 0){
+            recv_buffer[len] = '\0'; //在接收到的数据后面加上字符串结束符
+            std::cout << "接收到服务器数据：" << recv_buffer << std::endl;
+        }
     }
+    //关闭套接字
+    closesocket(client_socket); //关闭客户端套接字
     WSACleanup(); //释放 Winsock 资源
     system("pause");
     return 0;

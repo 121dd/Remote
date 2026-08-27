@@ -62,16 +62,21 @@ int main(){
 
     //5.等待客户端发送请求
     char buffer[1024] = {0};//非接收窗口，而是缓冲区（从接收窗口中拷贝到缓冲区中），recv()函数是阻塞的，直到有数据到来，才会继续往下执行
-    //返回接收数据的长度, 接收的内容存在buffer中0是接收标志，表示默认接收
-    int len = recv(client_socket, buffer, sizeof(buffer), 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
-    if(len > 0){
-        buffer[len] = '\0'; //在接收到的数据后面加上字符串结束符
-        printf("接收到客户端发送的数据：%s\n", buffer);
-    }
+    while(true){
+        //返回接收数据的长度, 接收的内容存在buffer中0是接收标志，表示默认接收，阻塞
+        int len = recv(client_socket, buffer, sizeof(buffer), 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
+        if(len > 0){
+            buffer[len] = '\0'; //在接收到的数据后面加上字符串结束符
+            printf("接收到客户端发送的数据：%s\n", buffer);
+        }
 
-    //6.发送数据
-    send(client_socket, buffer, sizeof(buffer), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
-    std::cout << "发送数据的内容为：" << buffer << std::endl;
+        //6.发送数据
+        send(client_socket, buffer, sizeof(buffer), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
+        std::cout << "发送数据的内容为：" << buffer << std::endl;
+    }
+    //关闭套接字
+    closesocket(client_socket); //关闭客户端套接字
+    closesocket(server_socket); //关闭服务器套接字
     //关闭
     WSACleanup(); //释放网络资源
     system("pause");
