@@ -1,5 +1,7 @@
 //服务器端
 #include "serve.h"
+
+#pragma comment(lib, "ws2_32.lib") 
 int main(){
     //服务器网络编程
     /*1.初始化网络环境
@@ -32,7 +34,7 @@ int main(){
 
     SOCKADDR_IN server_addr; //声明一个结构体变量，用来存储服务器的地址和端口信息
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = 99888; // 监听的端口，0-65535，端口号不能小于1024，端口号不能大于65535
+    server_addr.sin_port = htons(99888); // 使用 htons() 函数将端口号转换为网络字节序
     server_addr.sin_addr.S_un.S_addr = inet_addr("0.0.0.0"); // 0.0.0.0 监听服务器上所有的IP（电脑上可能不只有一张网卡；
     if(bind(server_socket, (sockaddr*)&server_addr, sizeof(SOCKADDR_IN)) == SOCKET_ERROR){
         printf("绑定地址和端口失败，错误码：%d\n", WSAGetLastError());
@@ -52,7 +54,9 @@ int main(){
     //4.等待客户端连接, accept函数是阻塞的，直到有客户端连接上来，才会继续往下执行,返回客户端的socket
     SOCKADDR_IN client_addr;
     int client_addr_len = sizeof(SOCKADDR_IN);
+    printf("等待客户端连接...\n");
     SOCKET client_socket = accept(server_socket, (sockaddr*)&client_addr, &client_addr_len); //阻塞等待客户端连接，直到有客户端连接上来，才会继续往下执行
+    printf("客户端连接成功,客户端IP: %s,客户端端口: %d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
     //5.等待客户端发送请求
     char buffer[1024] = {0};//非接收窗口，而是缓冲区（从接收窗口中拷贝到缓冲区中），recv()函数是阻塞的，直到有数据到来，才会继续往下执行
