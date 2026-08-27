@@ -1,5 +1,8 @@
 //服务器端
 #include "serve.hpp"
+
+#define BECV_BUFFER_SIZE 1024*1024*1
+
 int main(){
     // ⭐ 设置控制台为 UTF-8 编码
     SetConsoleOutputCP(CP_UTF8);
@@ -61,21 +64,27 @@ int main(){
     printf("客户端连接成功,客户端IP: %s,客户端端口: %d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
     //5.等待客户端发送请求
-    char buffer[1024] = {0};//非接收窗口，而是缓冲区（从接收窗口中拷贝到缓冲区中），recv()函数是阻塞的，直到有数据到来，才会继续往下执行
+    char* buffer = (char*)malloc(BECV_BUFFER_SIZE);//非接收窗口，而是缓冲区（从接收窗口中拷贝到缓冲区中），recv()函数是阻塞的，直到有数据到来，才会继续往下执行
+
+    //给他一个指针让他一次处理一个包的内容，多读到的内容的位置通过index保存下来
+    //也就是构建一个可持续的缓存区
+    int index = 0;
+    int packet_len = 0;
     while(true){
         //返回接收数据的长度, 接收的内容存在buffer中0是接收标志，表示默认接收，阻塞
-        int len = recv(client_socket, buffer, sizeof(buffer), 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
-
+        
+        //BECVG_BUFFER_SIZE - index代表缓冲区的大小
+        int len = recv(client_socket, buffer + index, BECV_BUFFER_SIZE - index, 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
         if(len > 0){
-            buffer[len] = '\0'; //在接收到的数据后面加上字符串结束符
-            Packet* packet = ParsePacket(buffer, len);
+            index += len;//缓冲区有效数字的z总长度
+            Packet* packet = ParsePacket(buffer, index);
+            packet_len = packet->header.body_len + sizeof(PacketHeader);
+            index = index - packet_len;//把一个包拿走后剩下的长度
+            memmove(buffer, buffer + packet_len, index);//移动把buffer + index
             std::cout << "接收到客户端发送的数据" << packet->body << std::endl;
             std::cout << "---------------------" << std::endl;
             free(packet);
-            // fwrite(buffer, 1, len, stdout); //把缓冲区中的数据写入到标准输出流中
-            // fwrite("\r\n---\r\n", 1, 8, stdout); //换行
         }
-
         //6.发送数据
         //send(client_socket, buffer, sizeof(buffer), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
         //std::cout << "发送数据的内容为：" << buffer << std::endl;
