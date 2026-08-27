@@ -15,11 +15,53 @@ int main(){
 
     WSADATA wsaData; //声明一个结构体变量，用来存储 Windows Socket 的“启动信息, 即一份申请表
     WSAStartup(MAKEWORD(2, 2), &wsaData); //向 Windows 申请“我要使用网络功能”，并完成初始化
-    //2.创建服务器socket
-    //3.开启服务器监听
-    //4.等待客户端连接
-    //5.等待客户端发送请求
 
+    /*
+    2.创建服务器socket
+    创建一个套接字，AF_INET：表示使用IPv4协议，SOCK_STREAM：表示使用TCP协议，0：表示使用默认的协议
+    */
+    SOCKET server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if(server_socket == INVALID_SOCKET){
+        printf("创建服务器套接字失败，错误码：%d\n", WSAGetLastError());
+        return -1;
+    }
+
+    //给服务器绑定地址和端口
+    //准备一个地址  SOCKADDR_IN用于存储 IPv4 地址和端口信息的结构体
+    //SOCKADDR_IN是IPV4的结构体，SOCKADDR_IN6是IPV6的结构体，SOCKADDR是通用的结构体，SOCKADDR_IN和SOCKADDR_IN6都是SOCKADDR的子类
+
+    SOCKADDR_IN server_addr; //声明一个结构体变量，用来存储服务器的地址和端口信息
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = 99888; // 监听的端口，0-65535，端口号不能小于1024，端口号不能大于65535
+    server_addr.sin_addr.S_un.S_addr = inet_addr("0.0.0.0"); // 0.0.0.0 监听服务器上所有的IP（电脑上可能不只有一张网卡；
+    if(bind(server_socket, (sockaddr*)&server_addr, sizeof(SOCKADDR_IN)) == SOCKET_ERROR){
+        printf("绑定地址和端口失败，错误码：%d\n", WSAGetLastError());
+        return -1;
+    }
+    
+    //3.开启服务器监听 backlog:已完成三次握手、但还未被 accept() 取走的客户端连接
+    if( listen(server_socket, 1) == SOCKET_ERROR){
+        printf("开启服务器监听失败，错误码：%d\n", WSAGetLastError());
+        return -1;
+    }
+
+    /*listen() 负责“准备一个队列”，并“叫号”（完成三次握手）。
+    客户端连接成功后，操作系统把“连接”这个对象放进队列。
+    accept() 负责“从队列里取号”，并返回给程序。*/
+
+    //4.等待客户端连接, accept函数是阻塞的，直到有客户端连接上来，才会继续往下执行,返回客户端的socket
+    SOCKADDR_IN client_addr;
+    int client_addr_len = sizeof(SOCKADDR_IN);
+    SOCKET client_socket = accept(server_socket, (sockaddr*)&client_addr, &client_addr_len); //阻塞等待客户端连接，直到有客户端连接上来，才会继续往下执行
+
+    //5.等待客户端发送请求
+    char buffer[1024] = {0};//非接收窗口，而是缓冲区（从接收窗口中拷贝到缓冲区中），recv()函数是阻塞的，直到有数据到来，才会继续往下执行
+    //返回接收数据的长度, 接收的内容存在buffer中0是接收标志，表示默认接收
+    int len = recv(client_socket, buffer, sizeof(buffer), 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
+    printf("接收到客户端发送的数据：%s\n", buffer);
+
+    //6.发送数据
+    send(client_socket, buffer, sizeof(buffer), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
     //关闭
     WSACleanup(); //释放网络资源
     return 0;
