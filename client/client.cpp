@@ -1,4 +1,4 @@
-#include "client_head.h"
+#include "client_head.hpp"
 
 int main(){
     // ⭐ 设置控制台为 UTF-8 编码
@@ -38,18 +38,15 @@ int main(){
     while(true){
         //准备发送的数据 sprintf:把一个格式化的字符串写入一个字符数组中
         sprintf_s(buffer, sizeof(buffer), "packet:%d", count++);
+        std::cout << "发送数据的内容为：" << buffer << std::endl;
         // std::cout << "请输入要发送的数据：";
         // fgets(buffer, sizeof(buffer), stdin);
         //创建数据包,这种情况下malloc比new好，因为结构体Packet使用的是柔性结构，得根据数据去确定他的内存空间
-        Packet* packet = (Packet*)malloc(sizeof(PacketHeader) + strlen(buffer) + 1);//new一块区域
-        packet->header.magic = 0x55AA77CC; 
-        packet->header.cmd = 2000;
-        packet->header.body_len = strlen(buffer) + 1; //数据体长度
-        memcpy(packet->body, buffer, packet->header.body_len); //把buffer中的数据拷贝到packet的body中
+
+        Packet* packet = PackPacket(0x55AA77CC, 2000, buffer, strlen(buffer) + 1 );//预留一字节给/0
 
         send(client_socket, (char*)&packet->header.magic, packet->header.body_len + sizeof(PacketHeader), 0);//发送给客户端的缓冲区
         free(packet); //释放内存
-        std::cout << "发送数据的内容为：" << buffer << std::endl;
         //再由网络自动将数据发送给服务器
 
         //等待接收数据

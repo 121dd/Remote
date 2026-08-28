@@ -18,3 +18,12 @@ struct Packet{//数据包结构体
 };
 
 #pragma pack(pop) //恢复结构体对齐方式为默认值
+
+Packet* PackPacket(int magic, int cmd, char* buffer, int buffer_len){
+    Packet* pck = (Packet*)malloc(buffer_len + sizeof(PacketHeader));
+    pck->header.magic = magic; 
+    pck->header.cmd = cmd;
+    pck->header.body_len = buffer_len; //数据体长度
+    memcpy(pck->body, buffer, pck->header.body_len); //把buffer中的数据拷贝到packet的body中
+    return pck;
+}
