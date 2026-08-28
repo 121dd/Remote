@@ -52,4 +52,15 @@ int GetPacketLen(Packet* pck){
     if(pck != NULL){
         return pck->header.body_len + sizeof(PacketHeader);
     }
+    return 0;
+}
+
+//封装要发送的数据
+Packet* PackPacket(int magic, int cmd, char* buffer, int buffer_len){
+    Packet* pck = (Packet*)malloc(buffer_len + sizeof(PacketHeader));
+    pck->header.magic = magic; 
+    pck->header.cmd = cmd;
+    pck->header.body_len = buffer_len; //数据体长度
+    memcpy(pck->body, buffer, pck->header.body_len); //把buffer中的数据拷贝到packet的body中
+    return pck;
 }

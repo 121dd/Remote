@@ -1,4 +1,5 @@
 #include "client_head.hpp"
+#define RECV_BUFFER_LEN 1024 *1024*1
 
 int main(){
     // ⭐ 设置控制台为 UTF-8 编码
@@ -12,8 +13,8 @@ int main(){
     }
 
     //1.创建socket连接
-    SOCKET client_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if(client_socket == INVALID_SOCKET){    
+    SOCKET connect_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if(connect_socket == INVALID_SOCKET){    
         printf("创建客户端套接字失败，错误码：%d\n", WSAGetLastError());
         return -1;
     }
@@ -24,7 +25,7 @@ int main(){
     
     //2.连接服务器
     //服务器必须bind一个固定端口，客户端通过connect可以随机分配一个端口，并且系统自动配置client_socket;
-    if(connect(client_socket, (sockaddr*)&server_addr, sizeof(SOCKADDR_IN)) == SOCKET_ERROR){
+    if(connect(connect_socket, (sockaddr*)&server_addr, sizeof(SOCKADDR_IN)) == SOCKET_ERROR){
         printf("连接服务器失败，错误码：%d\n", WSAGetLastError());
         return -1;
     }  
@@ -32,33 +33,38 @@ int main(){
     std::cout <<"服务器IP地址:"<< inet_ntoa(server_addr.sin_addr) <<"端口:"<< ntohs(server_addr.sin_port) << std::endl;
     //3.发送数据 connet后就连接成功
     
-    char buffer[1024] = {0};
-    char recv_buffer[1024] = {0};
-    int count = 0;
+    char* buffer = new char[RECV_BUFFER_LEN];
+    char* recv_buffer = new char[RECV_BUFFER_LEN];
+    //int count = 0;
+    int index = 0;
     while(true){
         //准备发送的数据 sprintf:把一个格式化的字符串写入一个字符数组中
-        sprintf_s(buffer, sizeof(buffer), "packet:%d", count++);
-        std::cout << "发送数据的内容为：" << buffer << std::endl;
-        // std::cout << "请输入要发送的数据：";
-        // fgets(buffer, sizeof(buffer), stdin);
+        // sprintf_s(buffer, sizeof(buffer), "packet:%d", count++);
+        // std::cout << "发送数据的内容为：" << buffer << std::endl;
+        std::cout << "请输入要发送的数据：";
+        fgets(buffer, RECV_BUFFER_LEN, stdin);
         //创建数据包,这种情况下malloc比new好，因为结构体Packet使用的是柔性结构，得根据数据去确定他的内存空间
-
         Packet* packet = PackPacket(0x55AA77CC, 2000, buffer, strlen(buffer) + 1 );//预留一字节给/0
-
-        send(client_socket, (char*)&packet->header.magic, packet->header.body_len + sizeof(PacketHeader), 0);//发送给客户端的缓冲区
+        send(connect_socket, (char*)&packet->header.magic, packet->header.body_len + sizeof(PacketHeader), 0);//发送给客户端的缓冲区
         free(packet); //释放内存
         //再由网络自动将数据发送给服务器
 
         //等待接收数据
-        // int len = recv(client_socket, recv_buffer, sizeof(recv_buffer), 0);
-        // if(len > 0){
-        //     recv_buffer[len] = '\0'; //在接收到的数据后面加上字符串结束符
-        //     std::cout << "接收到服务器数据：" << recv_buffer << std::endl;
-        // }
+        int len = recv(connect_socket, recv_buffer + index, RECV_BUFFER_LEN - index, 0);
+        if(len > 0){
+            index += len;//缓冲区有效数字的总长度
+            Packet* pck = ParsePacket(recv_buffer,  index);
+            index = index - GetPacketLen(pck);//把一个包拿走后剩下的长度
+            memmove(recv_buffer, recv_buffer + GetPacketLen(pck), index);//移动把buffer + index
+            std::cout << "接收到服务器数据：" << pck->body  << std::endl;
+            free(pck);
+        }
         Sleep(100); //延时100毫秒
     }
+    delete[] buffer;
+    delete[] recv_buffer;
     //关闭套接字
-    closesocket(client_socket); //关闭客户端套接字
+    closesocket(connect_socket); //关闭客户端套接字
     WSACleanup(); //释放 Winsock 资源
     system("pause");
     return 0;

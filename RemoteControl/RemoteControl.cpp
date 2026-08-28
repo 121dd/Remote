@@ -27,8 +27,8 @@ int main(){
     2.创建服务器socket
     创建一个套接字，AF_INET：表示使用IPv4协议，SOCK_STREAM：表示使用TCP协议，0：表示使用默认的协议
     */
-    SOCKET server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if(server_socket == INVALID_SOCKET){
+    SOCKET listen_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if(listen_socket == INVALID_SOCKET){
         printf("创建服务器套接字失败，错误码：%d\n", WSAGetLastError());
         return -1;
     }
@@ -41,13 +41,13 @@ int main(){
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(9988); // 使用 htons() 函数将端口号转换为网络字节序
     server_addr.sin_addr.S_un.S_addr = inet_addr("0.0.0.0"); // 0.0.0.0 监听服务器上所有的IP（电脑上可能不只有一张网卡；
-    if(bind(server_socket, (sockaddr*)&server_addr, sizeof(SOCKADDR_IN)) == SOCKET_ERROR){
+    if(bind(listen_socket, (sockaddr*)&server_addr, sizeof(SOCKADDR_IN)) == SOCKET_ERROR){
         printf("绑定地址和端口失败，错误码：%d\n", WSAGetLastError());
         return -1;
     }
     
     //3.开启服务器监听 backlog:已完成三次握手、但还未被 accept() 取走的客户端连接
-    if( listen(server_socket, 1) == SOCKET_ERROR){
+    if( listen(listen_socket, 1) == SOCKET_ERROR){
         printf("开启服务器监听失败，错误码：%d\n", WSAGetLastError());
         return -1;
     }
@@ -60,7 +60,7 @@ int main(){
     SOCKADDR_IN client_addr;
     int client_addr_len = sizeof(SOCKADDR_IN);
     printf("等待客户端连接...\n");
-    SOCKET client_socket = accept(server_socket, (sockaddr*)&client_addr, &client_addr_len); //阻塞等待客户端连接，直到有客户端连接上来，才会继续往下执行
+    SOCKET connect_socket = accept(listen_socket, (sockaddr*)&client_addr, &client_addr_len); //阻塞等待客户端连接，直到有客户端连接上来，才会继续往下执行
     printf("客户端连接成功,客户端IP: %s,客户端端口: %d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
     //5.等待客户端发送请求
@@ -74,25 +74,29 @@ int main(){
         //返回接收数据的长度, 接收的内容存在buffer中0是接收标志，表示默认接收，阻塞
         
         //BECVG_BUFFER_SIZE - index代表缓冲区的大小
-        int len = recv(client_socket, buffer + index, BECV_BUFFER_SIZE - index, 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
+        int len = recv(connect_socket, buffer + index, BECV_BUFFER_SIZE - index, 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
         if(len > 0){
+            //接收数据
             index += len;//缓冲区有效数字的总长度
             Packet* packet = ParsePacket(buffer, index);
             index = index - GetPacketLen(packet);//把一个包拿走后剩下的长度
             memmove(buffer, buffer + GetPacketLen(packet), index);//移动把buffer + index
             std::cout << "接收到客户端发送的数据" << packet->body << std::endl;
+
+            //6.发送数据
+            Packet* pck = PackPacket(packet->header.magic, packet->header.cmd, packet->body,  packet->header.body_len + 1);
+            send(connect_socket, (char*)&pck->header.magic, GetPacketLen(pck), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
+            std::cout << "发送数据的内容为：" << pck->body << std::endl;
             std::cout << "---------------------" << std::endl;
             free(packet);
+            free(pck);
         }
-        //6.发送数据
-        //send(client_socket, buffer, sizeof(buffer), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
-        //std::cout << "发送数据的内容为：" << buffer << std::endl;
         Sleep(500); //延时100毫秒
     }
     //关闭套接字
     delete[] buffer;
-    closesocket(client_socket); //关闭客户端套接字
-    closesocket(server_socket); //关闭服务器套接字
+    closesocket(connect_socket); //关闭客户端套接字
+    closesocket(listen_socket); //关闭服务器套接字
     //关闭
     WSACleanup(); //释放网络资源
     system("pause");
