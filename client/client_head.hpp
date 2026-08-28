@@ -2,6 +2,8 @@
 #include <iostream>
 #include <Windows.h> //操作系统接口
 #pragma comment(lib, "ws2_32.lib") //链接库文件，Windows Socket 2.0 库文件 
+#define RECV_BUFFER_LEN 1024 *1024*1
+SOCKET g_connect_socket;
 
 //只要是你通过网络发送的二进制数据，定义结构体时必须确保它在任何平台上大小都一样！
 //网络通信（Socket 收发）
@@ -64,5 +66,23 @@ int GetPacketLen(Packet* pck){
     if(pck != NULL){
         return pck->header.body_len + sizeof(PacketHeader);
     }
+    return 0;
+}
+
+int InitSocket(){
+    //0.初始化 Winsock 环境
+    WSADATA wsaData;
+    if(WSAStartup(MAKEWORD(2, 2), &wsaData) != 0){
+        printf("Winsock 初始化失败，错误码：%d\n", WSAGetLastError());
+        return -1;
+    }
+
+    //1.创建socket连接
+    g_connect_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if(g_connect_socket == INVALID_SOCKET){    
+        printf("创建客户端套接字失败，错误码：%d\n", WSAGetLastError());
+        return -1;
+    }
+    
     return 0;
 }
