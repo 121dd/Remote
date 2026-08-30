@@ -10,7 +10,10 @@
                 "${file}",
                 "-o",
                 "${fileDirname}\\${fileBasenameNoExtension}.exe",
-                "-lws2_32"
+                "-lws2_32",
+                "-lgdiplus",
+                "-lgdi32",
+                "-lole32"
             ],
             "options": {
                 "cwd": "${fileDirname}"

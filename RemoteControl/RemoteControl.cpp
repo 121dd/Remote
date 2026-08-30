@@ -6,6 +6,15 @@ int main(){
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 
+    //DPI 感知：拿真实物理分辨率，否则 GetSystemMetrics 返回逻辑分辨率，截图会模糊/偏小
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+    //这是获取屏幕的初始化
+    //GDI+ 初始化（整个程序只初始化一次，HandleScreen 里不再启停）
+    GdiplusStartupInput gdiplusInput;
+    ULONG_PTR gdiplusToken;
+    GdiplusStartup(&gdiplusToken, &gdiplusInput, NULL);
+
     /*1.初始化网络，2.创建服务器socket3.开启服务器监听 */
     if(InitServer() == -1){
         std::cout << "初始化失败" << std::endl;
@@ -38,32 +47,19 @@ int main(){
             Packet* packet = ParsePacket(buffer, index);
             index = index - GetPacketLen(packet);//把一个包拿走后剩下的长度
             memmove(buffer, buffer + GetPacketLen(packet), index);//移动把buffer + index
-            std::cout << "接收到客户端发送的数据" << packet->body << std::endl;
-
-
-            //7.处理数据
-            if(packet->header.cmd == 1){//表示客户端要获取数据
-                //截取数据并发送给客户
-                Packet* pck = PackPacket(packet->header.magic, 1, packet->body,  packet->header.body_len);
-                send(connect_socket, (char*)&pck->header.magic, GetPacketLen(pck), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
-                std::cout << "发送数据的内容为：" << pck->body << std::endl;
-                std::cout << "---------------------" << std::endl;
-                free(pck);
-            }
-            Packet* pck = PackPacket(packet->header.magic, packet->header.cmd, packet->body,  packet->header.body_len);
-            send(connect_socket, (char*)&pck->header.magic, GetPacketLen(pck), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
-            std::cout << "发送数据的内容为：" << pck->body << std::endl;
-            std::cout << "---------------------" << std::endl;
-            free(pck);
+            HandleCommand(packet);
             free(packet);
         }
         Sleep(500); //延时100毫秒
     }
+    
     //关闭套接字
     delete[] buffer;
     closesocket(connect_socket); //关闭客户端套接字
     closesocket(g_listen_socket); //关闭服务器套接字
+
     //关闭
+    GdiplusShutdown(gdiplusToken); //释放 GDI+
     WSACleanup(); //释放网络资源
     system("pause");
     return 0;
