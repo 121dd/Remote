@@ -25,11 +25,11 @@ int main(){
     char* buffer = (char*)malloc(BECV_BUFFER_SIZE);//非接收窗口，而是缓冲区（从接收窗口中拷贝到缓冲区中），recv()函数是阻塞的，直到有数据到来，才会继续往下执行
     //给他一个指针让他一次处理一个包的内容，多读到的内容的位置通过index保存下来
     //也就是构建一个可持续的缓存区
+
     int index = 0;
     int packet_len = 0;
     while(true){
         //返回接收数据的长度, 接收的内容存在buffer中0是接收标志，表示默认接收，阻塞
-        
         //BECVG_BUFFER_SIZE - index代表缓冲区的大小
         int len = recv(connect_socket, buffer + index, BECV_BUFFER_SIZE - index, 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
         if(len > 0){
@@ -40,15 +40,21 @@ int main(){
             memmove(buffer, buffer + GetPacketLen(packet), index);//移动把buffer + index
             std::cout << "接收到客户端发送的数据" << packet->body << std::endl;
 
+
             //7.处理数据
             if(packet->header.cmd == 1){//表示客户端要获取数据
                 //截取数据并发送给客户
-                Packet* pck = PackPacket(packet->header.magic, packet->header.cmd, packet->body,  packet->header.body_len + 1);
+                Packet* pck = PackPacket(packet->header.magic, 1, packet->body,  packet->header.body_len);
                 send(connect_socket, (char*)&pck->header.magic, GetPacketLen(pck), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
                 std::cout << "发送数据的内容为：" << pck->body << std::endl;
                 std::cout << "---------------------" << std::endl;
                 free(pck);
             }
+            Packet* pck = PackPacket(packet->header.magic, packet->header.cmd, packet->body,  packet->header.body_len);
+            send(connect_socket, (char*)&pck->header.magic, GetPacketLen(pck), 0);//把buffer中的数据发送给客户端，sizeof(buffer)是发送数据的长度，0是发送标志，表示默认发送
+            std::cout << "发送数据的内容为：" << pck->body << std::endl;
+            std::cout << "---------------------" << std::endl;
+            free(pck);
             free(packet);
         }
         Sleep(500); //延时100毫秒

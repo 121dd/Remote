@@ -3,7 +3,7 @@
         {
             "type": "cppbuild",
             "label": "C/C++: g++.exe 生成活动文件",
-            "command": "E:\\vscode\\workplace\\tools\\w64devkit\\bin\\g++.exe",
+            "command": "D:\\viscode\\w64devkit\\bin\\g++.exe",
             "args": [
                 "-fdiagnostics-color=always",
                 "-g",

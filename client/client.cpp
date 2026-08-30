@@ -11,7 +11,7 @@ int main(){
     SOCKADDR_IN server_addr; //声明一个结构体变量，用来存储服务器的地址和端口信息
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(9988); // 使用 htons() 函数将端口号转换为网络字节序
-    server_addr.sin_addr.S_un.S_addr = inet_addr("192.168.1.30"); // 服务器的 IP 地址
+    server_addr.sin_addr.S_un.S_addr = inet_addr("127.0.0.1"); // 服务器的 IP 地址
 
     //服务器必须bind一个固定端口，客户端通过connect可以随机分配一个端口，并且系统自动配置client_socket;
     if(connect(g_connect_socket, (sockaddr*)&server_addr, sizeof(SOCKADDR_IN)) == SOCKET_ERROR){
@@ -46,6 +46,10 @@ int main(){
             index = index - GetPacketLen(pck);//把一个包拿走后剩下的长度
             memmove(recv_buffer, recv_buffer + GetPacketLen(pck), index);//移动把buffer + index
             std::cout << "接收到服务器数据：" << pck->body  << std::endl;
+            if(pck->header.cmd == 1){
+                //服务器返回了屏幕数据
+                //解析显示数据
+            }
             free(pck);
         }
         Sleep(100); //延时100毫秒

@@ -19,6 +19,7 @@ struct Packet{//数据包结构体
 
 #pragma pack(pop) //恢复结构体对齐方式为默认值
 
+//解包，提取一次数据
 Packet* ParsePacket(char* buffer, int len){
     Packet pck;
     Packet* pck_ptr;
@@ -35,21 +36,25 @@ Packet* ParsePacket(char* buffer, int len){
             break;
         }
     }
+    if(i + 8 > len){// magic 没找到，或找到后不够读 cmd+body_len
+        return NULL;
+    }
     pck.header.cmd = *(int*)(buffer + i);
     i += 4;
     pck.header.body_len = *(int*)(buffer + i);
     i += 4;
     //获取数据,必须先创建pck去存pck.header.body_len不然不知道长度
-    if(pck.header.body_len > 0){
-        //创建接受缓存区
-        pck_ptr = (Packet*)malloc(sizeof(PacketHeader) + pck.header.body_len);
-        memcpy(pck_ptr->body, buffer + i, pck.header.body_len);
-        memcpy(&pck_ptr->header, &pck.header, sizeof(PacketHeader));
-        return pck_ptr;
+    if(pck.header.body_len <= 0 || pck.header.body_len > len - i){  // body 长度越界
+        return NULL;
     }
-    return NULL;
+        //创建接受缓存区
+    pck_ptr = (Packet*)malloc(sizeof(PacketHeader) + pck.header.body_len);
+    memcpy(pck_ptr->body, buffer + i, pck.header.body_len);
+    memcpy(&pck_ptr->header, &pck.header, sizeof(PacketHeader));
+    return pck_ptr;
 }
 
+//包长
 int GetPacketLen(Packet* pck){
     if(pck != NULL){
         return pck->header.body_len + sizeof(PacketHeader);
