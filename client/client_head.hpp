@@ -3,6 +3,7 @@
 #include <Windows.h> //操作系统接口
 #pragma comment(lib, "ws2_32.lib") //链接库文件，Windows Socket 2.0 库文件 
 #define RECV_BUFFER_LEN 1024 *1024*1
+#define PACKET_MAGE 0x55AA77CC
 SOCKET g_connect_socket;
 
 //只要是你通过网络发送的二进制数据，定义结构体时必须确保它在任何平台上大小都一样！

@@ -27,7 +27,7 @@ int main(){
     SOCKADDR_IN client_addr;
     int client_addr_len = sizeof(SOCKADDR_IN);
     printf("等待客户端连接...\n");
-    SOCKET connect_socket = accept(g_listen_socket, (sockaddr*)&client_addr, &client_addr_len); //阻塞等待客户端连接，直到有客户端连接上来，才会继续往下执行
+    g_connect_socket = accept(g_listen_socket, (sockaddr*)&client_addr, &client_addr_len); //阻塞等待客户端连接，直到有客户端连接上来，才会继续往下执行
     printf("客户端连接成功,客户端IP: %s,客户端端口: %d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
     //5.等待客户端发送请求; 解决粘包：协议 和丢包：index指向
@@ -40,7 +40,7 @@ int main(){
     while(true){
         //返回接收数据的长度, 接收的内容存在buffer中0是接收标志，表示默认接收，阻塞
         //BECVG_BUFFER_SIZE - index代表缓冲区的大小
-        int len = recv(connect_socket, buffer + index, BECV_BUFFER_SIZE - index, 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
+        int len = recv(g_connect_socket, buffer + index, BECV_BUFFER_SIZE - index, 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
         if(len > 0){
             //6.接收数据
             index += len;//缓冲区有效数字的总长度
@@ -55,7 +55,7 @@ int main(){
     
     //关闭套接字
     delete[] buffer;
-    closesocket(connect_socket); //关闭客户端套接字
+    closesocket(g_connect_socket); //关闭客户端套接字
     closesocket(g_listen_socket); //关闭服务器套接字
 
     //关闭

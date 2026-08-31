@@ -6,8 +6,19 @@
 using namespace Gdiplus;
 
 #pragma comment(lib, "ws2_32.lib") //链接库文件，Windows Socket 2.0 库文件
+
 #define BECV_BUFFER_SIZE 1024*1024*1
+#define PACKET_MAGE 0x55AA77CC
+//枚举（enum）定义, 给枚举成员赋值了 1、2、4 这样的二进制位标志（Bit Flags）值。
+enum CMD{
+    CMD_SCREEN = 1,
+    CMD_MOUSE = 2,
+    CMD_KEYBOARD = 4,
+    CMD_TEST = 2026
+};
+
 SOCKET g_listen_socket;
+SOCKET g_connect_socket;
 
 #pragma pack(push, 1) //设置结构体对齐方式为1字节对齐
 struct PacketHeader{//数据包头部结构体
@@ -22,13 +33,6 @@ struct Packet{//数据包结构体
 };
 #pragma pack(pop) //恢复结构体对齐方式为默认值
 
-//枚举（enum）定义, 给枚举成员赋值了 1、2、4 这样的二进制位标志（Bit Flags）值。
-enum CMD{
-    CMD_SCREEN = 1,
-    CMD_MOUSE = 2,
-    CMD_KEYBOARD = 4,
-    CMD_TEST = 2026
-};
 
 int InitServer(){
 //服务器网络编程
@@ -223,8 +227,11 @@ int HandleScreen(Packet* pck){
         int len = GlobalSize(hCurrent);//获取内存块的实际大小
         std::cout << "PNG 字节数: " << len << std::endl;
 
+        //发送数据
+        Packet* packet = PackPacket(PACKET_MAGE, CMD_SCREEN, pdata, len);
+        send(g_connect_socket, (char*)&packet->header.magic, sizeof(PacketHeader) + packet->header.body_len, 0);
         //TODO: 把 pdata 的前 len 个字节塞进 Packet 发回客户端
-
+        free(packet);
         GlobalUnlock(hCurrent);
         pStream->Release();   // 释放流，连带释放 hMem，不要再 GlobalFree
     } //Bitmap 在这里析构

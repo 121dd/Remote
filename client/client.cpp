@@ -33,7 +33,7 @@ int main(){
         std::cout << "请输入要发送的数据：";
         fgets(buffer, RECV_BUFFER_LEN, stdin);
         //创建数据包,这种情况下malloc比new好，因为结构体Packet使用的是柔性结构，得根据数据去确定他的内存空间
-        Packet* packet = PackPacket(0x55AA77CC, 2000, buffer, strlen(buffer) + 1 );//预留一字节给/0
+        Packet* packet = PackPacket(PACKET_MAGE, 2000, buffer, strlen(buffer) + 1 );//预留一字节给/0
         send(g_connect_socket, (char*)&packet->header.magic, packet->header.body_len + sizeof(PacketHeader), 0);//发送给客户端的缓冲区
         free(packet); //释放内存
         //再由网络自动将数据发送给服务器
