@@ -44,10 +44,10 @@ int main(){
         if(len > 0){
             //6.接收数据
             index += len;//缓冲区有效数字的总长度
-            Packet* packet = ParsePacket(buffer, index);
+            Packet* packet = ParsePacket(buffer, index); //解析数据
             index = index - GetPacketLen(packet);//把一个包拿走后剩下的长度
             memmove(buffer, buffer + GetPacketLen(packet), index);//移动把buffer + index
-            HandleCommand(packet);
+            HandleCommand(packet); //处理命令
             free(packet);
         }
         Sleep(500); //延时100毫秒

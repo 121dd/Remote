@@ -116,7 +116,7 @@ Packet* ParsePacket(char* buffer, int len){
     return pck_ptr;
 }
 
-//包长
+//包长, packet的长度
 int GetPacketLen(Packet* pck){
     if(pck != NULL){
         return pck->header.body_len + sizeof(PacketHeader);
@@ -199,6 +199,7 @@ int HandleScreen(Packet* pck){
             DeleteObject(hBitmap);
             return -1;
         }
+
         //创建内存流（TRUE 表示流 Release 时自动释放 hMem，之后不要再 GlobalFree）
         IStream* pStream = NULL;
         HRESULT ret = CreateStreamOnHGlobal(hMem, TRUE, &pStream);
@@ -223,7 +224,7 @@ int HandleScreen(Packet* pck){
         //否则 GlobalLock 读到的可能不是正确的 PNG 数据
         HGLOBAL hCurrent = NULL;
         GetHGlobalFromStream(pStream, &hCurrent); //从流对象里反向拿到内存句柄
-        char* pdata = (char*)GlobalLock(hCurrent);//锁定内存，获取直接访问指针
+        char* pdata = (char*)GlobalLock(hCurrent);//锁定内存，GlobalLock 返回的是整个内存块的起始地址，它不是从“流指针”位置开始读的。
         int len = GlobalSize(hCurrent);//获取内存块的实际大小
         std::cout << "PNG 字节数: " << len << std::endl;
 

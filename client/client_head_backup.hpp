@@ -1,9 +1,7 @@
 #include <stdio.h>
 #include <iostream>
 #include <Windows.h> //操作系统接口
-#include <gdiplus.h> //使用GDI+
-using namespace Gdiplus;
-#pragma comment(lib, "ws2_32.lib") //链接库文件，Windows Socket 2.0 库文件
+#pragma comment(lib, "ws2_32.lib") //链接库文件，Windows Socket 2.0 库文件 
 #define RECV_BUFFER_LEN 1024 *1024*1
 #define PACKET_MAGE 0x55AA77CC
 enum CMD{
@@ -85,10 +83,17 @@ Packet* ParsePacket(char* buffer, int len){
 }
 
 
+int GetPacketLen(Packet* pck){
+    if(pck != NULL){
+        return pck->header.body_len + sizeof(PacketHeader);
+    }
+    return 0;
+}
+
+
 //开辟一条新的线程
 //返回值 调用约定 函数名
-Gdiplus::Bitmap* g_image = NULL;  // 全局图片，WM_PAINT 绘制要用
-IStream* g_stream = NULL;          // GDI+ 懒解码，流必须和 Bitmap 一起活着
+CImage g_image;
 DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
     //不停的发送数据，解析数据
     char* recv_buffer = (char*)malloc(RECV_BUFFER_LEN);
@@ -105,33 +110,34 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
             if(pack != NULL){
                 /*你手里有一袋咖啡豆（pack->body）。咖啡机（GDI+）只认“咖啡粉盒”（IStream），
                 不认散装豆子。所以你只能把豆子先磨成粉（写入流），装进粉盒（IStream），才能塞进机器里冲泡。*/
-                //把收到的字节数据装进内存流
-                HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, pack->header.body_len);
-                if(hMem == NULL){ free(pack); continue; }
+                //拿到图片数据
+                //绘制图片数据
+                HGLOBAL hMen = GlobalAlloc(GMEM_MOVEABLE, 0);
+                if(hMen == NULL) continue;
                 //创建内存流（TRUE 表示流 Release 时自动释放 hMem，之后不要再 GlobalFree）
                 IStream* pStream = NULL;
-                if(CreateStreamOnHGlobal(hMem, TRUE, &pStream) == S_OK){
+                HRESULT ret = CreateStreamOnHGlobal(hMen, TRUE, &pStream);
+                if(ret == S_OK){
                     ULONG length = 0;
                     pStream->Write(pack->body, pack->header.body_len, &length);
+
+                    //重新获取有效权柄
+                    HGLOBAL hCurrent = NULL;
+                    GetHGlobalFromStream(pStream, &hCurrent);
                     //把pStream的指针移到开头
-                    LARGE_INTEGER lg = {0};
+
+                    LARGE_INTEGER lg ={0};
                     pStream->Seek(lg, STREAM_SEEK_SET, NULL);
 
-                    //原来 g_image.Load(pStream)，现在用 GDI+ 从流里解码
-                    Gdiplus::Bitmap* newImage = Gdiplus::Bitmap::FromStream(pStream);
-                    if(newImage != NULL){
-                        //换新图前先释放旧的（顺序：先删图，再放流）
-                        if(g_image) delete g_image;
-                        if(g_stream) g_stream->Release();
-                        g_image = newImage;
-                        g_stream = pStream;   //不能 Release！Bitmap 解码 PNG 时还要读它
-                        //通知UI线程绘制
-                        InvalidateRect(g_hwnd, NULL, FALSE);
-                    } else {
-                        pStream->Release();   //解码失败，释放流（连带释放 hMem）
-                    }
+                    //将数据移到缓冲中
+                    g_image.Load(pStream);
+                    //将图片划到窗口上，窗口在UI线程上（不同线程上），不能再本线程上操作
+
+                    //通知UI线程绘制
+                    InvalidateRect(g_hwnd, NULL, FALSE);
+                    UpdateWindow(g_hwnd);
+                    free(pack);
                 }
-                free(pack);
             }
         }
     }
@@ -141,25 +147,19 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
 LRESULT CALLBACK winProc(HWND hwnd, UINT msg, WPARAM wPatam, LPARAM lParam){
     switch(msg)
     {
-        //绘制屏幕图像
+        //绘制炒作
         case WM_PAINT:{
             PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hwnd, &ps);
-            //拿到 g_image，画到窗口上
-            if(g_image != NULL){
-                //做一个缩放
-                Gdiplus::Graphics graphics(hdc);
-                //设置高质量缩放（对应 GDI 的 HALFTONE）
-                graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-                //拿到窗口客户区大小，把图片缩放填满
-                RECT client_rect;
-                GetClientRect(hwnd, &client_rect);
-                int client_width = client_rect.right - client_rect.left;
-                int client_height = client_rect.bottom - client_rect.top;
-                //把图片缩放画满客户区（对应 CImage 的 StretchBlt）
-                graphics.DrawImage(g_image, 0, 0, client_width, client_height);
-            }
+            BeginPaint(hwnd, &ps);
             EndPaint(hwnd, &ps);
+            //拿到这个image
+            if(g_image.IsNull){
+                //做一个缩放
+                //拿到窗口的区域大小
+                RECT rect;
+                GetClientRect();
+            }
+
             break;
         }
         default:
