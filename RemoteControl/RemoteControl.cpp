@@ -50,7 +50,6 @@ int main(){
             HandleCommand(packet); //处理命令
             free(packet);
         }
-        Sleep(500); //延时100毫秒
     }
     
     //关闭套接字

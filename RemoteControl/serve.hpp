@@ -7,7 +7,7 @@ using namespace Gdiplus;
 
 #pragma comment(lib, "ws2_32.lib") //链接库文件，Windows Socket 2.0 库文件
 
-#define BECV_BUFFER_SIZE 1024*1024*1
+#define BECV_BUFFER_SIZE 1024*1024*10
 #define PACKET_MAGE 0x55AA77CC
 //枚举（enum）定义, 给枚举成员赋值了 1、2、4 这样的二进制位标志（Bit Flags）值。
 enum CMD{

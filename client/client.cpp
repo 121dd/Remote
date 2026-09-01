@@ -7,6 +7,9 @@ int WINAPI WinMain(
     PSTR pCmdLine, 
     int nCmdShow)
 {
+    //初始化关键代码段
+    InitializeCriticalSection(&g_cri_sec);//初始化锁
+
     //GDI+ 初始化（整个程序只做一次，SendScreenCallBack 里的 Bitmap::FromStream 需要它）
     Gdiplus::GdiplusStartupInput gdiplusInput;
     ULONG_PTR gdiplusToken;
@@ -43,6 +46,7 @@ int WINAPI WinMain(
         TranslateMessage(&msg); //翻译消息
         DispatchMessage(&msg);  //分发消息 用 msg.hwnd 去查表
         //winProc回调函数就会收到消息
+
     }
     return 0;
 }
