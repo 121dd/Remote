@@ -99,17 +99,27 @@ Packet* ParsePacket(char* buffer, int len){
         }
     }
     if(i + 8 > len){// magic 没找到，或找到后不够读 cmd+body_len
-        return NULL;
+        return nullptr;
     }
     pck.header.cmd = *(int*)(buffer + i);
     i += 4;
     pck.header.body_len = *(int*)(buffer + i);
     i += 4;
     //获取数据,必须先创建pck去存pck.header.body_len不然不知道长度
+
+    //当len长度为0的时候也要执行
     if(pck.header.body_len <= 0 || pck.header.body_len > len - i){  // body 长度越界
-        return NULL;
+        //当len长度为0的时候也要执行，获取的是命令
+        if(pck.header.body_len ==0){
+            pck_ptr = (Packet*)malloc(sizeof(PacketHeader));
+            memcpy(&pck_ptr->header, &pck.header, sizeof(PacketHeader));
+            return pck_ptr;
+        }
+        else{
+            return nullptr;
+        }
     }
-        //创建接受缓存区
+    //创建接受缓存区
     pck_ptr = (Packet*)malloc(sizeof(PacketHeader) + pck.header.body_len);
     memcpy(pck_ptr->body, buffer + i, pck.header.body_len);
     memcpy(&pck_ptr->header, &pck.header, sizeof(PacketHeader));

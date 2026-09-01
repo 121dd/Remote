@@ -95,7 +95,12 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
     while(true){
         //发送屏幕请求数据
         Packet* pack = PackPacket(PACKET_MAGE, CMD_SCREEN, NULL, 0);
-        send(g_connect_socket, (char*)&pack->header.magic, GetPacketLen(pack), 0);
+        int sen_len = send(g_connect_socket, (char*)&pack->header.magic, GetPacketLen(pack), 0);
+        if(sen_len > 0){
+            OutputDebugStringA("发送屏幕请求数据成功\n");
+        } else {
+            OutputDebugStringA("发送屏幕请求数据失败\n");
+        }
         free(pack);
 
         //等待接收数据
