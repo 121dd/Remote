@@ -41,9 +41,7 @@ enum class ENUM_MOUSE{
     RUP = 5,//鼠标右键抬起
     MDOWN = 6,//鼠标中键按下
     MUP = 7,//鼠标中键抬起
-    LCLICK = 8,//鼠标左键单击
-    RCLICK = 9,//鼠标右键单击
-    MCLICK = 10,//鼠标中键单击
+    //8/9/10 原为单击动作，已删除（单击由 DOWN+UP 表达，不需要单独动作）
     LDLICK = 11,//鼠标左键双击
     RDLICK = 12,//鼠标右键双击
     MDLICK = 13,//鼠标中键双击
@@ -299,8 +297,19 @@ LRESULT CALLBACK winProc(HWND hwnd, UINT msg, WPARAM wPatam, LPARAM lParam){
         case WM_LBUTTONDBLCLK://鼠标左键双击
             DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::LDLICK), hwnd, wPatam, lParam);
             break;
+        case WM_RBUTTONDBLCLK://鼠标右键双击
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::RDLICK), hwnd, wPatam, lParam);
+            break;
+        case WM_MBUTTONDBLCLK://鼠标中键双击
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::MDLICK), hwnd, wPatam, lParam);
+            break;
+        case WM_MBUTTONDOWN://鼠标中键按下
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::MDOWN), hwnd, wPatam, lParam);
+            break;
+        case WM_MBUTTONUP://鼠标中键抬起
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::MUP), hwnd, wPatam, lParam);
+            break;
 
-        
         case WM_KEYDOWN:
         case WM_SYSKEYDOWN:{
             Keyboard key_board;
@@ -340,7 +349,7 @@ int InitWindow(HINSTANCE hInstance, int nCmdShow){
     ws.lpszClassName = CLASS_NAME;
     ws.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     ws.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-    ws.style = CS_HREDRAW | CS_VREDRAW;
+    ws.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     if(!RegisterClass(&ws)){
         MessageBox(NULL, L"窗口注册失败", L"错误", MB_OK | MB_ICONERROR);
         return 0;

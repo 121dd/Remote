@@ -44,9 +44,7 @@ enum class ENUM_MOUSE{
     RUP = 5,//鼠标右键抬起
     MDOWN = 6,//鼠标中键按下
     MUP = 7,//鼠标中键抬起
-    LCLICK = 8,//鼠标左键单击
-    RCLICK = 9,//鼠标右键单击
-    MCLICK = 10,//鼠标中键单击
+    //8/9/10 原为单击动作，已删除（单击由 DOWN+UP 表达，不需要单独动作）
     LDLICK = 11,//鼠标左键双击
     RDLICK = 12,//鼠标右键双击
     MDLICK = 13,//鼠标中键双击
@@ -265,25 +263,14 @@ int HandleMouse(Packet* pck){
     case ENUM_MOUSE::MUP:
         mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, GetMessageExtraInfo());
         break;
-    case ENUM_MOUSE::LCLICK:
-        mouse_event(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP, 0, 0, 0, GetMessageExtraInfo());
-        break;
-    case ENUM_MOUSE::RCLICK:
-        mouse_event(MOUSEEVENTF_RIGHTDOWN | MOUSEEVENTF_RIGHTUP, 0 , 0, 0, GetMessageExtraInfo());
-        break; 
-    case ENUM_MOUSE::MCLICK:
-        mouse_event(MOUSEEVENTF_MIDDLEDOWN | MOUSEEVENTF_MIDDLEUP, 0, 0, 0, GetMessageExtraInfo());
-        break;
     case ENUM_MOUSE::LDLICK:
-        mouse_event(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP, 0, 0, 0, GetMessageExtraInfo());
+        //只发一次点击（第一次点击的 DOWN/UP 已由单击消息发过，避免"双击变三击"）
         mouse_event(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP, 0, 0, 0, GetMessageExtraInfo());
         break;
-    case ENUM_MOUSE::RDLICK: 
-        mouse_event(MOUSEEVENTF_RIGHTDOWN | MOUSEEVENTF_RIGHTUP, 0, 0, 0, GetMessageExtraInfo());
-        mouse_event(MOUSEEVENTF_RIGHTDOWN | MOUSEEVENTF_RIGHTUP, 0, 0, 0, GetMessageExtraInfo());
+    case ENUM_MOUSE::RDLICK:
+        mouse_event(MOUSEEVENTF_RIGHTDOWN | MOUSEEVENTF_RIGHTUP, 0 , 0, 0, GetMessageExtraInfo());
         break;
     case ENUM_MOUSE::MDLICK:
-        mouse_event(MOUSEEVENTF_MIDDLEDOWN | MOUSEEVENTF_MIDDLEUP, 0, 0, 0, GetMessageExtraInfo());
         mouse_event(MOUSEEVENTF_MIDDLEDOWN | MOUSEEVENTF_MIDDLEUP, 0, 0, 0, GetMessageExtraInfo());
         break;
     default:

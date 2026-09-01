@@ -21,11 +21,22 @@ int WINAPI WinMain(
     //2.初始化网络,并启动监听
     if(InitSocket() == -1) return 0;
 
-    //3.连接服务器
+    //3.连接服务器（IP 从命令行参数传入，如 client.exe 192.168.1.100；不传默认 127.0.0.1）
+    char ip[64] = "127.0.0.1";
+    char* arg = pCmdLine;
+    while(*arg == ' ' || *arg == '\t') arg++;   // 跳过前导空白
+    if(*arg != '\0'){
+        int n = 0;
+        while(arg[n] != '\0' && arg[n] != ' ' && arg[n] != '\t' && n < 63){
+            ip[n] = arg[n];
+            n++;
+        }
+        ip[n] = '\0';
+    }
     SOCKADDR_IN server_addr; //声明一个结构体变量，用来存储服务器的地址和端口信息
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(9988); // 使用 htons() 函数将端口号转换为网络字节序
-    server_addr.sin_addr.S_un.S_addr = inet_addr("127.0.0.1"); // 服务器的 IP 地址
+    server_addr.sin_addr.S_un.S_addr = inet_addr(ip); // 服务器的 IP 地址
     //服务器必须bind一个固定端口，客户端通过connect可以随机分配一个端口，并且系统自动配置client_socket;
     if(connect(g_connect_socket, (sockaddr*)&server_addr, sizeof(SOCKADDR_IN)) == SOCKET_ERROR){
         OutputDebugString(L"连接服务器失败\n");

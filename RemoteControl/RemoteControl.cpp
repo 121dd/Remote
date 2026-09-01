@@ -1,5 +1,27 @@
 //服务器端
+#include <winsock2.h>   //必须最先：定义 _WINSOCK2API_，否则 iphlpapi.h 不声明 GetAdaptersAddresses
 #include "serve.hpp"
+#include <iphlpapi.h>   //GetAdaptersAddresses 枚举网卡
+
+//打印本机所有激活的 IPv4 地址（方便客户端知道该填什么 IP）
+void PrintLocalIPs(){
+    ULONG bufLen = 0;
+    GetAdaptersAddresses(AF_INET, 0, NULL, NULL, &bufLen);
+    IP_ADAPTER_ADDRESSES* addrs = (IP_ADAPTER_ADDRESSES*)malloc(bufLen);
+    if(GetAdaptersAddresses(AF_INET, 0, NULL, addrs, &bufLen) == NO_ERROR){
+        for(IP_ADAPTER_ADDRESSES* a = addrs; a != NULL; a = a->Next){
+            if(a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;   //跳过回环 127.0.0.1
+            if(a->OperStatus != IfOperStatusUp) continue;          //只打印激活的网卡
+            for(IP_ADAPTER_UNICAST_ADDRESS* u = a->FirstUnicastAddress; u != NULL; u = u->Next){
+                if(u->Address.lpSockaddr->sa_family == AF_INET){
+                    char* ip = inet_ntoa(((sockaddr_in*)u->Address.lpSockaddr)->sin_addr);
+                    printf("本机IP: %s (%ls)\n", ip, a->FriendlyName);
+                }
+            }
+        }
+    }
+    free(addrs);
+}
 
 int main(){
     //设置控制台为 UTF-8 编码
@@ -26,6 +48,7 @@ int main(){
     //4.等待客户端连接, accept函数是阻塞的，直到有客户端连接上来，才会继续往下执行,返回客户端的socket
     SOCKADDR_IN client_addr;
     int client_addr_len = sizeof(SOCKADDR_IN);
+    PrintLocalIPs();   //打印本机 IP，方便客户端填
     printf("等待客户端连接...\n");
     g_connect_socket = accept(g_listen_socket, (sockaddr*)&client_addr, &client_addr_len); //阻塞等待客户端连接，直到有客户端连接上来，才会继续往下执行
     printf("客户端连接成功,客户端IP: %s,客户端端口: %d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
@@ -41,14 +64,29 @@ int main(){
         //返回接收数据的长度, 接收的内容存在buffer中0是接收标志，表示默认接收，阻塞
         //BECVG_BUFFER_SIZE - index代表缓冲区的大小
         int len = recv(g_connect_socket, buffer + index, BECV_BUFFER_SIZE - index, 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
-        if(len > 0){
-            //6.接收数据
-            index += len;//缓冲区有效数字的总长度
-            Packet* packet = ParsePacket(buffer, index); //解析数据
+        if(len <= 0) break;   //连接断开/出错，退出主循环
+        //6.接收数据
+        index += len;//缓冲区有效数字的总长度
+        Packet* packet = ParsePacket(buffer, index); //解析数据
+
+        //数据不完整，继续接收数据
+        while(packet == nullptr){
+            //如果解析失败，说明数据不完整，继续接收数据
+            len = recv(g_connect_socket, buffer + index, BECV_BUFFER_SIZE - index, 0);
+            if(len <= 0) break;   //断开/出错，跳出内层
+            index += len;
+            packet = ParsePacket(buffer, index);
+            if(index >= BECV_BUFFER_SIZE) break;   //防呆：缓冲满仍无完整包，丢弃防死循环
+        }
+        if(packet == nullptr) break;   //内层跳出后仍无完整包 → 断开/异常，退出
+        //已经有数据就都处理完再接收下一个数据
+        while(packet != nullptr){
+            //如果解析成功，说明数据完整，处理数据
             index = index - GetPacketLen(packet);//把一个包拿走后剩下的长度
             memmove(buffer, buffer + GetPacketLen(packet), index);//移动把buffer + index
             HandleCommand(packet); //处理命令
             free(packet);
+            packet = (index > 0) ? ParsePacket(buffer, index) : nullptr;   // 继续解析下一个
         }
     }
     
