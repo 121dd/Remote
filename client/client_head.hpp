@@ -181,14 +181,27 @@ LRESULT CALLBACK winProc(HWND hwnd, UINT msg, WPARAM wPatam, LPARAM lParam){
                 int client_width = client_rect.right - client_rect.left;
                 int client_height = client_rect.bottom - client_rect.top;
 
+                //远程图片原始尺寸
+                int image_width = g_image->GetWidth();
+                int image_height = g_image->GetHeight();
+
+                //按客户区缩放，保持宽高比（fit，不变形），并居中
+                float scale_w = (float)client_width / image_width;
+                float scale_h = (float)client_height / image_height;
+                float scale = scale_w < scale_h ? scale_w : scale_h;
+                int draw_w = (int)(image_width * scale);
+                int draw_h = (int)(image_height * scale);
+                int draw_x = (client_width - draw_w) / 2;
+                int draw_y = (client_height - draw_h) / 2;
+
                 //双缓冲：先画到内存 DC，再一次 BitBlt 整块贴到窗口
                 HDC mem_dc = CreateCompatibleDC(hdc);
                 HBITMAP mem_bmp = CreateCompatibleBitmap(hdc, client_width, client_height);
                 HGDIOBJ old_bmp = SelectObject(mem_dc, mem_bmp);
 
                 Gdiplus::Graphics graphics(mem_dc);
-                graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-                graphics.DrawImage(g_image, 0, 0, client_width, client_height);
+                graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBilinear);
+                graphics.DrawImage(g_image, draw_x, draw_y, draw_w, draw_h);
 
                 //一次性把整块贴到窗口，中间不露背景
                 BitBlt(hdc, 0, 0, client_width, client_height, mem_dc, 0, 0, SRCCOPY);
