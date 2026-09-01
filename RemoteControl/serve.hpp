@@ -21,65 +21,47 @@ SOCKET g_listen_socket;
 SOCKET g_connect_socket;
 
 #pragma pack(push, 1) //设置结构体对齐方式为1字节对齐
-struct PacketHeader{//数据包头部结构体
+//数据包头部结构体
+struct PacketHeader{
     int magic; //魔数，用于标识数据包的合法性
     int cmd; //四字节命令号
     int body_len; //数据体长度
 };
-
-struct Packet{//数据包结构体
+//数据包结构体
+struct Packet{
     PacketHeader header; //数据包头部
     char body[]; //数据包体, 不固定长度
 };
 #pragma pack(pop) //恢复结构体对齐方式为默认值
 
+//鼠标信息有哪些？
+//1.按键：左键，右键，中键. 2.状态:按下，抬起，移动. 3.坐标：x,y
+enum class ENUM_MOUSE{
+    MOVE = 1,//鼠标移动
+    LDOWN = 2,//鼠标左键按下
+    LUP = 3,//鼠标左键抬起
+    RDOWN = 4,//鼠标右键按下
+    RUP = 5,//鼠标右键抬起
+    MDOWN = 6,//鼠标中键按下
+    MUP = 7,//鼠标中键抬起
+    LCLICK = 8,//鼠标左键单击
+    RCLICK = 9,//鼠标右键单击
+    MCLICK = 10,//鼠标中键单击
+    LDLICK = 11,//鼠标左键双击
+    RDLICK = 12,//鼠标右键双击
+    MDLICK = 13,//鼠标中键双击
 
-int InitServer(){
-//服务器网络编程
-    /*1.初始化网络环境
-    申请"使用网络功能"的许可证, WSAStartup 是第一步申请服务;
+};
+struct Mouse{
+    int action; //鼠标动作 ENUM_MOUSE
+    POINT ptXY; //鼠标坐标 X , Y
+};
 
-    MAKEWORD(主版本号, 副版本号)，用于表示请求的 Winsock 版本， 版本 2.2，也可以写成0x0202，因为MAKEWORD是一个宏函数返回值就是 0x0202
-
-    Winsock = Windows Socket，socket=<主机号：端口号>，是网络通信的一个端点;
-    TCP连接：：= <socket1, socket2>，socket1和socket2是两个通信端点;
-
-    WSAStartup(MAKEWORD(2, 2), &wsaData);就是请求权限，就可以创建套接字，完整的 Windows Socket 网络编程用户权限
-    */
-    WSADATA wsaData; //声明一个结构体变量，用来存储 Windows Socket 的“启动信息, 即一份申请表
-    WSAStartup(MAKEWORD(2, 2), &wsaData); //向 Windows 申请“我要使用网络功能”，并完成初始化
-
-    /*
-    2.创建服务器socket
-    创建一个套接字，AF_INET：表示使用IPv4协议，SOCK_STREAM：表示使用TCP协议，0：表示使用默认的协议
-    */
-    g_listen_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if(g_listen_socket == INVALID_SOCKET){
-        printf("创建服务器套接字失败，错误码：%d\n", WSAGetLastError());
-        return -1;
-    }
-
-    //给服务器绑定地址和端口
-    //准备一个地址  SOCKADDR_IN用于存储 IPv4 地址和端口信息的结构体
-    //SOCKADDR_IN是IPV4的结构体，SOCKADDR_IN6是IPV6的结构体，SOCKADDR是通用的结构体，SOCKADDR_IN和SOCKADDR_IN6都是SOCKADDR的子类
-
-    SOCKADDR_IN server_addr; //声明一个结构体变量，用来存储服务器的地址和端口信息
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(9988); // 使用 htons() 函数将端口号转换为网络字节序
-    server_addr.sin_addr.S_un.S_addr = inet_addr("0.0.0.0"); // 0.0.0.0 监听服务器上所有的IP（电脑上可能不只有一张网卡；
-    if(bind(g_listen_socket, (sockaddr*)&server_addr, sizeof(SOCKADDR_IN)) == SOCKET_ERROR){
-        printf("绑定地址和端口失败，错误码：%d\n", WSAGetLastError());
-        return -1;
-    }
-    
-    //3.开启服务器监听 backlog:已完成三次握手、但还未被 accept() 取走的客户端连接
-    if( listen(g_listen_socket, 1) == SOCKET_ERROR){
-        printf("开启服务器监听失败，错误码：%d\n", WSAGetLastError());
-        return -1;
-    }
-    
-    return 0;
-}
+//键盘
+struct Keyboard{
+    int virtual_code;//虚拟键码
+    int key_state;//按键状态 0:抬起 1:按下
+};
 
 //解包，提取一次数据
 Packet* ParsePacket(char* buffer, int len){
@@ -125,7 +107,6 @@ Packet* ParsePacket(char* buffer, int len){
     memcpy(&pck_ptr->header, &pck.header, sizeof(PacketHeader));
     return pck_ptr;
 }
-
 //包长, packet的长度
 int GetPacketLen(Packet* pck){
     if(pck != NULL){
@@ -133,7 +114,6 @@ int GetPacketLen(Packet* pck){
     }
     return 0;
 }
-
 //封装要发送的数据
 Packet* PackPacket(int magic, int cmd, char* buffer, int buffer_len){
     Packet* pck = (Packet*)malloc(buffer_len + sizeof(PacketHeader));
@@ -162,6 +142,7 @@ int GetEncoderClsid(const WCHAR* format, CLSID* pClsid){
     return -1;
 }
 
+//处理屏幕命令
 int HandleScreen(Packet* pck){
     //GDI+ 初始化和 DPI 感知已移到 main，这里只负责截屏打包
 
@@ -251,15 +232,86 @@ int HandleScreen(Packet* pck){
     DeleteObject(hBitmap);
     return 0;
 }
-
+//处理鼠标命令
 int HandleMouse(Packet* pck){
+    Mouse mouse;
+    memcpy(&mouse.action, pck->body, pck->header.body_len);
+    std::cout << "鼠标动作: " << mouse.action << ", 坐标: (" << mouse.ptXY.x << ", " << mouse.ptXY.y << ")" << std::endl;
+    //模拟鼠标事件
+    //设置鼠标位置
+    SetCursorPos(mouse.ptXY.x, mouse.ptXY.y);
+    switch (static_cast<ENUM_MOUSE>(mouse.action))
+    {
+    case ENUM_MOUSE::MOVE:
+        SetCursorPos(mouse.ptXY.x, mouse.ptXY.y);
+        //鼠标移动
+        break;
+    //可以改成SendInput更加安全
+    case ENUM_MOUSE::LDOWN:
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, GetMessageExtraInfo());
+        break;
+    case ENUM_MOUSE::LUP:
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, GetMessageExtraInfo());
+        break;
+    case ENUM_MOUSE::RDOWN:
+        mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, GetMessageExtraInfo());     
+        break;
+    case ENUM_MOUSE::RUP:
+        mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, GetMessageExtraInfo());
+        break;
+    case ENUM_MOUSE::MDOWN:
+        mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, 0, GetMessageExtraInfo());
+        break;
+    case ENUM_MOUSE::MUP:
+        mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, GetMessageExtraInfo());
+        break;
+    case ENUM_MOUSE::LCLICK:
+        mouse_event(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP, 0, 0, 0, GetMessageExtraInfo());
+        break;
+    case ENUM_MOUSE::RCLICK:
+        mouse_event(MOUSEEVENTF_RIGHTDOWN | MOUSEEVENTF_RIGHTUP, 0 , 0, 0, GetMessageExtraInfo());
+        break; 
+    case ENUM_MOUSE::MCLICK:
+        mouse_event(MOUSEEVENTF_MIDDLEDOWN | MOUSEEVENTF_MIDDLEUP, 0, 0, 0, GetMessageExtraInfo());
+        break;
+    case ENUM_MOUSE::LDLICK:
+        mouse_event(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP, 0, 0, 0, GetMessageExtraInfo());
+        mouse_event(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP, 0, 0, 0, GetMessageExtraInfo());
+        break;
+    case ENUM_MOUSE::RDLICK: 
+        mouse_event(MOUSEEVENTF_RIGHTDOWN | MOUSEEVENTF_RIGHTUP, 0, 0, 0, GetMessageExtraInfo());
+        mouse_event(MOUSEEVENTF_RIGHTDOWN | MOUSEEVENTF_RIGHTUP, 0, 0, 0, GetMessageExtraInfo());
+        break;
+    case ENUM_MOUSE::MDLICK:
+        mouse_event(MOUSEEVENTF_MIDDLEDOWN | MOUSEEVENTF_MIDDLEUP, 0, 0, 0, GetMessageExtraInfo());
+        mouse_event(MOUSEEVENTF_MIDDLEDOWN | MOUSEEVENTF_MIDDLEUP, 0, 0, 0, GetMessageExtraInfo());
+        break;
+    default:
+        std::cout << "未知鼠标动作: " << mouse.action << std::endl;
+        break;
+    }
+
     return 0;
 }
-
+//处理键盘命令
 int HandleKeyboard(Packet* pck){
+    Keyboard key_board;
+    memcpy(&key_board.virtual_code, pck->body, pck->header.body_len);
+    std::cout << "键盘动作: " << key_board.virtual_code << ", 状态: " << key_board.key_state << std::endl;
+    INPUT input = {0};
+    input.ki.wVk = key_board.virtual_code; //虚拟键码
+    input.ki.wScan = 0; //硬件扫描码
+    input.ki.time = 0;
+    input.ki.dwFlags = key_board.key_state; //按钮状态
+    input.ki.dwExtraInfo = 0;
+    input.type = INPUT_KEYBOARD;
+    int ret = SendInput(1, &input, sizeof(INPUT));
+    if(ret > 0){
+        std::cout << "键盘事件发送成功:" << key_board.virtual_code << std::endl;
+    }
     return 0;
 }
-
+//测试
 int HandleTest(Packet* pck){
     return 0;
 }
@@ -287,4 +339,52 @@ int HandleCommand(Packet* pck){
         default: break;
     }
     return ret;
+}
+
+//初始化网络并且开启监听
+int InitServer(){
+//服务器网络编程
+    /*1.初始化网络环境
+    申请"使用网络功能"的许可证, WSAStartup 是第一步申请服务;
+
+    MAKEWORD(主版本号, 副版本号)，用于表示请求的 Winsock 版本， 版本 2.2，也可以写成0x0202，因为MAKEWORD是一个宏函数返回值就是 0x0202
+
+    Winsock = Windows Socket，socket=<主机号：端口号>，是网络通信的一个端点;
+    TCP连接：：= <socket1, socket2>，socket1和socket2是两个通信端点;
+
+    WSAStartup(MAKEWORD(2, 2), &wsaData);就是请求权限，就可以创建套接字，完整的 Windows Socket 网络编程用户权限
+    */
+    WSADATA wsaData; //声明一个结构体变量，用来存储 Windows Socket 的“启动信息, 即一份申请表
+    WSAStartup(MAKEWORD(2, 2), &wsaData); //向 Windows 申请“我要使用网络功能”，并完成初始化
+
+    /*
+    2.创建服务器socket
+    创建一个套接字，AF_INET：表示使用IPv4协议，SOCK_STREAM：表示使用TCP协议，0：表示使用默认的协议
+    */
+    g_listen_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if(g_listen_socket == INVALID_SOCKET){
+        printf("创建服务器套接字失败，错误码：%d\n", WSAGetLastError());
+        return -1;
+    }
+
+    //给服务器绑定地址和端口
+    //准备一个地址  SOCKADDR_IN用于存储 IPv4 地址和端口信息的结构体
+    //SOCKADDR_IN是IPV4的结构体，SOCKADDR_IN6是IPV6的结构体，SOCKADDR是通用的结构体，SOCKADDR_IN和SOCKADDR_IN6都是SOCKADDR的子类
+
+    SOCKADDR_IN server_addr; //声明一个结构体变量，用来存储服务器的地址和端口信息
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(9988); // 使用 htons() 函数将端口号转换为网络字节序
+    server_addr.sin_addr.S_un.S_addr = inet_addr("0.0.0.0"); // 0.0.0.0 监听服务器上所有的IP（电脑上可能不只有一张网卡；
+    if(bind(g_listen_socket, (sockaddr*)&server_addr, sizeof(SOCKADDR_IN)) == SOCKET_ERROR){
+        printf("绑定地址和端口失败，错误码：%d\n", WSAGetLastError());
+        return -1;
+    }
+    
+    //3.开启服务器监听 backlog:已完成三次握手、但还未被 accept() 取走的客户端连接
+    if( listen(g_listen_socket, 1) == SOCKET_ERROR){
+        printf("开启服务器监听失败，错误码：%d\n", WSAGetLastError());
+        return -1;
+    }
+    
+    return 0;
 }
