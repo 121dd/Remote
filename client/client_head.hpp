@@ -4,8 +4,7 @@
 #include <gdiplus.h> //使用GDI+
 using namespace Gdiplus;
 #pragma comment(lib, "ws2_32.lib") //链接库文件，Windows Socket 2.0 库文件
-#define RECV_BUFFER_LEN 1024 *1024*10
-#define PACKET_MAGE 0x55AA77CC
+
 enum CMD{
     CMD_SCREEN = 1,
     CMD_MOUSE = 2,
@@ -13,9 +12,11 @@ enum CMD{
     CMD_TEST = 2026
 };
 
-
+#define RECV_BUFFER_LEN 1024 *1024*10
+#define PACKET_MAGE 0x55AA77CC
 SOCKET g_connect_socket;
 HWND g_hwnd = NULL; 
+
 //只要是你通过网络发送的二进制数据，定义结构体时必须确保它在任何平台上大小都一样！
 //网络通信（Socket 收发）
 #pragma pack(push, 1) //设置结构体对齐方式为1字节对齐
@@ -24,12 +25,40 @@ struct PacketHeader{//数据包头部结构体
     int cmd; //四字节命令号
     int body_len; //数据体长度
 };
-
 struct Packet{//数据包结构体
     PacketHeader header; //数据包头部
     char body[]; //数据包体, 不固定长度
 };
 #pragma pack(pop) //恢复结构体对齐方式为默认值
+
+//鼠标信息有哪些？
+//1.按键：左键，右键，中键. 2.状态:按下，抬起，移动. 3.坐标：x,y
+enum class ENUM_MOUSE{
+    MOVE = 1,//鼠标移动
+    LDOWN = 2,//鼠标左键按下
+    LUP = 3,//鼠标左键抬起
+    RDOWN = 4,//鼠标右键按下
+    RUP = 5,//鼠标右键抬起
+    MDOWN = 6,//鼠标中键按下
+    MUP = 7,//鼠标中键抬起
+    LCLICK = 8,//鼠标左键单击
+    RCLICK = 9,//鼠标右键单击
+    MCLICK = 10,//鼠标中键单击
+    LDLICK = 11,//鼠标左键双击
+    RDLICK = 12,//鼠标右键双击
+    MDLICK = 13,//鼠标中键双击
+
+};
+struct Mouse{
+    int action; //鼠标动作 ENUM_MOUSE
+    POINT ptXY; //鼠标坐标 X , Y
+};
+
+//键盘信息
+struct Keyboard{
+    int virtual_code;//虚拟键码
+    int key_state;//按键状态 0:抬起 1:按下
+};
 
 //包长, packet的长度
 int GetPacketLen(Packet* pck){
@@ -38,7 +67,6 @@ int GetPacketLen(Packet* pck){
     }
     return 0;
 }
-
 //封装要发送的数据
 Packet* PackPacket(int magic, int cmd, char* buffer, int buffer_len){
     Packet* pck = (Packet*)malloc(buffer_len + sizeof(PacketHeader));
@@ -48,7 +76,6 @@ Packet* PackPacket(int magic, int cmd, char* buffer, int buffer_len){
     memcpy(pck->body, buffer, pck->header.body_len); //把buffer中的数据拷贝到packet的body中
     return pck;
 }
-
 //解析接收到的数据
 Packet* ParsePacket(char* buffer, int len){
     Packet pck;
@@ -91,11 +118,13 @@ Packet* ParsePacket(char* buffer, int len){
 }
 
 
-//开辟一条新的线程
+//开辟一条新的线程，用来不断接受和发送对屏幕数据的请求和数据
 //返回值 调用约定 函数名
 Gdiplus::Bitmap* g_image = NULL;  // 全局图片，WM_PAINT 绘制要用
+int g_remote_width = -1;  // 远程屏幕宽度，-1 表示未知
+int g_remote_height = -1; // 远程屏幕高度，-1 表示未知
 IStream* g_stream = NULL;          // GDI+ 懒解码，流必须和 Bitmap 一起活着
-CRITICAL_SECTION g_cri_sec;
+CRITICAL_SECTION g_cri_sec; //锁，避免多线程同时改变一个变量
 DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
     //不停的发送数据，解析数据
     char* recv_buffer = (char*)malloc(RECV_BUFFER_LEN);
@@ -145,6 +174,10 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
                     if(g_stream) g_stream->Release();
                     g_image = newImage;
                     g_stream = pStream;   //不能 Release！Bitmap 解码 PNG 时还要读它
+                    if(g_remote_width ==-1 && g_remote_height == -1){
+                        g_remote_width = g_image->GetWidth();
+                        g_remote_height = g_image->GetHeight();
+                    }
                     LeaveCriticalSection(&g_cri_sec);
                     //通知UI线程绘制
                     InvalidateRect(g_hwnd, NULL, FALSE);
@@ -163,7 +196,39 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
     }
 }
 
-//响应，处理消息msg的函数
+void DOMOUSEACKTION(int Action, HWND hwnd, WPARAM wPatam, LPARAM lParam){
+//拿到的是客户区的鼠标位置
+    int xPos = LOWORD(lParam); //低字节是x坐标
+    int yPos = HIWORD(lParam); //高字节是y坐标
+    if(g_remote_width == -1 || g_remote_height == -1) return;
+    //和 WM_PAINT 一样的"保留宽高比 fit"，算出画面实际绘制的区域
+    RECT client_rect;
+    GetClientRect(hwnd, &client_rect);
+    int client_width = client_rect.right - client_rect.left;
+    int client_height = client_rect.bottom - client_rect.top;
+    float scale_w = (float)client_width / g_remote_width;
+    float scale_h = (float)client_height / g_remote_height;
+    float scale = scale_w < scale_h ? scale_w : scale_h;
+    int draw_w = (int)(g_remote_width * scale);
+    int draw_h = (int)(g_remote_height * scale);
+    int draw_x = (client_width - draw_w) / 2;
+    int draw_y = (client_height - draw_h) / 2;
+    //把客户区坐标换算成远程屏幕坐标（减去留白、按实际绘制区域缩放、夹紧边界）
+    int rxPox = (xPos - draw_x) * g_remote_width / draw_w;
+    int ryPos = (yPos - draw_y) * g_remote_height / draw_h;
+    if(rxPox < 0) rxPox = 0;  if(rxPox > g_remote_width)  rxPox = g_remote_width;
+    if(ryPos < 0) ryPos = 0;  if(ryPos > g_remote_height) ryPos = g_remote_height;
+    //发送数据
+    Mouse mouse;
+    mouse.action = Action;
+    mouse.ptXY.x = rxPox;
+    mouse.ptXY.y = ryPos;
+    Packet* packet = PackPacket(PACKET_MAGE, CMD::CMD_MOUSE, (char*)&mouse, sizeof(Mouse)); //打包数据
+    send(g_connect_socket, (char*)&packet->header.magic, GetPacketLen(packet), 0);
+    free(packet);
+}
+
+//响应，处理消息msg的函数 lParam是鼠标位置，wParam是键盘;
 LRESULT CALLBACK winProc(HWND hwnd, UINT msg, WPARAM wPatam, LPARAM lParam){
     switch(msg)
     {
@@ -214,12 +279,56 @@ LRESULT CALLBACK winProc(HWND hwnd, UINT msg, WPARAM wPatam, LPARAM lParam){
             EndPaint(hwnd, &ps);
             break;
         }
+        //鼠标消息
+        case WM_MOUSEMOVE:{//鼠标移动
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::MOVE), hwnd, wPatam, lParam);
+            break;
+        }
+        case WM_LBUTTONUP: //鼠标左键抬起
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::LUP), hwnd, wPatam, lParam);
+            break;
+        case WM_LBUTTONDOWN://鼠标左键按下
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::LDOWN), hwnd, wPatam, lParam);
+            break;
+        case WM_RBUTTONUP://鼠标右键抬起
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::RUP), hwnd, wPatam, lParam);
+            break;
+        case WM_RBUTTONDOWN://鼠标右键按下
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::RDOWN), hwnd, wPatam, lParam);
+            break;
+        case WM_LBUTTONDBLCLK://鼠标左键双击
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::LDLICK), hwnd, wPatam, lParam);
+            break;
+
+        
+        case WM_KEYDOWN:
+        case WM_SYSKEYDOWN:{
+            Keyboard key_board;
+            key_board.virtual_code = wPatam;
+            key_board.key_state = 0;   // 0 = 按下（不设 KEYUP 标志）
+            Packet* packet = PackPacket(PACKET_MAGE, CMD::CMD_KEYBOARD, (char*)&key_board, sizeof(Keyboard)); //打包数据
+            send(g_connect_socket, (char*)&packet->header.magic, GetPacketLen(packet), 0);
+            free(packet);
+            break;
+        }
+        case WM_KEYUP:
+        case WM_SYSKEYUP:{
+            Keyboard key_board;
+            key_board.virtual_code = wPatam;
+            key_board.key_state = KEYEVENTF_KEYUP;   // 抬起
+            Packet* packet = PackPacket(PACKET_MAGE, CMD::CMD_KEYBOARD, (char*)&key_board, sizeof(Keyboard)); //打包数据
+            send(g_connect_socket, (char*)&packet->header.magic, GetPacketLen(packet), 0);
+            free(packet);
+            break;
+        }
         default:
             return DefWindowProc(hwnd, msg, wPatam, lParam);
             break;
     }
     return 0;
 }
+
+
 
 //创建一个窗口的过程
 int InitWindow(HINSTANCE hInstance, int nCmdShow){
@@ -259,7 +368,6 @@ int InitWindow(HINSTANCE hInstance, int nCmdShow){
 
     return 0;
 }
-
 //连接服务器
 int InitSocket(){
     //0.初始化 Winsock 环境

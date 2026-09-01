@@ -299,12 +299,12 @@ int HandleKeyboard(Packet* pck){
     memcpy(&key_board.virtual_code, pck->body, pck->header.body_len);
     std::cout << "键盘动作: " << key_board.virtual_code << ", 状态: " << key_board.key_state << std::endl;
     INPUT input = {0};
+    input.type = INPUT_KEYBOARD; //输入类型为键盘
     input.ki.wVk = key_board.virtual_code; //虚拟键码
     input.ki.wScan = 0; //硬件扫描码
     input.ki.time = 0;
-    input.ki.dwFlags = key_board.key_state; //按钮状态
+    input.ki.dwFlags = key_board.key_state; //按钮状态 0 按下，1松开
     input.ki.dwExtraInfo = 0;
-    input.type = INPUT_KEYBOARD;
     int ret = SendInput(1, &input, sizeof(INPUT));
     if(ret > 0){
         std::cout << "键盘事件发送成功:" << key_board.virtual_code << std::endl;
