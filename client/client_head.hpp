@@ -1,3 +1,4 @@
+#include "../socket_send.hpp"
 #include <stdio.h>
 #include <iostream>
 #include <memory>
@@ -17,6 +18,7 @@ enum CMD{
 #define RECV_BUFFER_LEN 1024 *1024*10
 #define PACKET_MAGE 0x55AA77CC
 SOCKET g_connect_socket;
+SocketSender g_socket_sender;
 HWND g_hwnd = NULL; 
 
 //只要是你通过网络发送的二进制数据，定义结构体时必须确保它在任何平台上大小都一样！
@@ -143,7 +145,12 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
     //先发第一个屏幕请求
     {
         PacketPtr req = PackPacket(PACKET_MAGE, CMD_SCREEN, NULL, 0);
-        send(g_connect_socket, (char*)&req->header.magic, GetPacketLen(req), 0);
+        if(!g_socket_sender.Send(
+               g_connect_socket,
+               reinterpret_cast<const char*>(&req->header.magic),
+               GetPacketLen(req))){
+            return 0;
+        }
     }
 
     while(true){
@@ -179,6 +186,7 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
                 //原来 g_image.Load(pStream)，现在用 GDI+ 从流里解码
                 Gdiplus::Bitmap* newImage = Gdiplus::Bitmap::FromStream(pStream);
                 if(newImage != NULL){
+                    //锁，避免多线程同时改变一个变量
                     EnterCriticalSection(&g_cri_sec);
                     //换新图前先释放旧的（顺序：先删图，再放流）
                     if(g_image) delete g_image;
@@ -189,6 +197,7 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
                         g_remote_width = g_image->GetWidth();
                         g_remote_height = g_image->GetHeight();
                     }
+                    //解锁
                     LeaveCriticalSection(&g_cri_sec);
                     //通知UI线程绘制
                     InvalidateRect(g_hwnd, NULL, FALSE);
@@ -201,8 +210,12 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
 
         //这一帧处理完了，才请求下一帧
         PacketPtr req = PackPacket(PACKET_MAGE, CMD_SCREEN, NULL, 0);
-        send(g_connect_socket, (char*)&req->header.magic, GetPacketLen(req), 0);
-        Sleep(200); 
+        if(!g_socket_sender.Send(
+               g_connect_socket,
+               reinterpret_cast<const char*>(&req->header.magic),
+               GetPacketLen(req))){
+            return 0;
+        }
     }
 }
 
@@ -233,9 +246,14 @@ void DOMOUSEACKTION(int Action, HWND hwnd, WPARAM wPatam, LPARAM lParam, ULONGLO
     mouse.action = Action;
     mouse.ptXY.x = rxPox;
     mouse.ptXY.y = ryPos;
-    if(GetTickCount64()-moustick < 100 && Action == static_cast<int>(ENUM_MOUSE::MOVE)) return; //鼠标移动消息间隔至少100毫秒{
+    if(GetTickCount64()-moustick < 50 && Action == static_cast<int>(ENUM_MOUSE::MOVE)) return; //鼠标移动消息间隔至少100毫秒{
     PacketPtr packet = PackPacket(PACKET_MAGE, CMD::CMD_MOUSE, (char*)&mouse, sizeof(Mouse)); //打包数据
-    send(g_connect_socket, (char*)&packet->header.magic, GetPacketLen(packet), 0);
+    if(!g_socket_sender.Send(
+           g_connect_socket,
+           reinterpret_cast<const char*>(&packet->header.magic),
+           GetPacketLen(packet))){
+        return;
+    }
     moustick = GetTickCount64(); //更新鼠标移动时间戳
 }
 
@@ -331,7 +349,10 @@ LRESULT CALLBACK winProc(HWND hwnd, UINT msg, WPARAM wPatam, LPARAM lParam){
             key_board.virtual_code = wPatam;
             key_board.key_state = 0;   // 0 = 按下（不设 KEYUP 标志）
             PacketPtr packet = PackPacket(PACKET_MAGE, CMD::CMD_KEYBOARD, (char*)&key_board, sizeof(Keyboard)); //打包数据
-            send(g_connect_socket, (char*)&packet->header.magic, GetPacketLen(packet), 0);
+            g_socket_sender.Send(
+                g_connect_socket,
+                reinterpret_cast<const char*>(&packet->header.magic),
+                GetPacketLen(packet));
             break;
         }
         case WM_KEYUP:
@@ -340,7 +361,10 @@ LRESULT CALLBACK winProc(HWND hwnd, UINT msg, WPARAM wPatam, LPARAM lParam){
             key_board.virtual_code = wPatam;
             key_board.key_state = KEYEVENTF_KEYUP;   // 抬起
             PacketPtr packet = PackPacket(PACKET_MAGE, CMD::CMD_KEYBOARD, (char*)&key_board, sizeof(Keyboard)); //打包数据
-            send(g_connect_socket, (char*)&packet->header.magic, GetPacketLen(packet), 0);
+            g_socket_sender.Send(
+                g_connect_socket,
+                reinterpret_cast<const char*>(&packet->header.magic),
+                GetPacketLen(packet));
             break;
         }
         default:

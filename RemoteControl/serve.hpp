@@ -1,4 +1,5 @@
 #include <winsock2.h>   //必须最先：定义 _WINSOCK2API_，否则 iphlpapi.h 不声明 GetAdaptersAddresses
+#include "../socket_send.hpp"
 #include <stdio.h>
 #include <iostream>
 #include <Windows.h> //操作系统接口
@@ -172,6 +173,7 @@ int HandleScreen(const Packet* pck){ //这样pck没有被使用到，这是因�
     HBITMAP hBitmap = CreateCompatibleBitmap(hScreen, sWidth, sHeight);
     //绑定
     HGDIOBJ hOld = SelectObject(hMemDC, hBitmap);
+    bool send_succeeded = false;
 
     //5.把屏幕复制到位图（BitBlt 截屏）
     BitBlt(hMemDC, 0, 0, sWidth, sHeight, hScreen, 0, 0, SRCCOPY);
@@ -234,7 +236,10 @@ int HandleScreen(const Packet* pck){ //这样pck没有被使用到，这是因�
 
         //发送数据
         PacketPtr packet = PackPacket(PACKET_MAGE, CMD_SCREEN, pdata, len);
-        send(g_connect_socket, (char*)&packet->header.magic, sizeof(PacketHeader) + packet->header.body_len, 0);
+        send_succeeded = SendAll(
+            g_connect_socket,
+            reinterpret_cast<const char*>(&packet->header.magic),
+            GetPacketLen(packet));
         //TODO: 把 pdata 的前 len 个字节塞进 Packet 发回客户端
         GlobalUnlock(hCurrent);
         pStream->Release();   // 释放流，连带释放 hMem，不要再 GlobalFree
@@ -242,7 +247,7 @@ int HandleScreen(const Packet* pck){ //这样pck没有被使用到，这是因�
 
     //释放 HBITMAP
     DeleteObject(hBitmap);
-    return 0;
+    return send_succeeded ? 0 : -1;
 }
 //处理鼠标命令
 int HandleMouse(const Packet* pck){
