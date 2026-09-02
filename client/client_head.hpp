@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <iostream>
+#include <memory>
+#include <vector>
 #include <Windows.h> //操作系统接口
 #include <gdiplus.h> //使用GDI+
 using namespace Gdiplus;
@@ -31,6 +33,14 @@ struct Packet{//数据包结构体
 };
 #pragma pack(pop) //恢复结构体对齐方式为默认值
 
+// Packet 使用 malloc 分配，智能指针析构时必须用 free 释放。
+struct PacketDeleter{
+    void operator()(Packet* packet) const noexcept{
+        free(packet);
+    }
+};
+using PacketPtr = std::unique_ptr<Packet, PacketDeleter>;
+
 //鼠标信息有哪些？
 //1.按键：左键，右键，中键. 2.状态:按下，抬起，移动. 3.坐标：x,y
 enum class ENUM_MOUSE{
@@ -59,25 +69,27 @@ struct Keyboard{
 };
 
 //包长, packet的长度
-int GetPacketLen(Packet* pck){
-    if(pck != NULL){
+int GetPacketLen(const PacketPtr& pck){
+    if(pck != nullptr){
         return pck->header.body_len + sizeof(PacketHeader);
     }
     return 0;
 }
 //封装要发送的数据
-Packet* PackPacket(int magic, int cmd, char* buffer, int buffer_len){
-    Packet* pck = (Packet*)malloc(buffer_len + sizeof(PacketHeader));
+PacketPtr PackPacket(int magic, int cmd, char* buffer, int buffer_len){
+    PacketPtr pck((Packet*)malloc(buffer_len + sizeof(PacketHeader)));
     pck->header.magic = magic; 
     pck->header.cmd = cmd;
     pck->header.body_len = buffer_len; //数据体长度
-    memcpy(pck->body, buffer, pck->header.body_len); //把buffer中的数据拷贝到packet的body中
+    if(buffer_len > 0){
+        memcpy(pck->body, buffer, pck->header.body_len); //把buffer中的数据拷贝到packet的body中
+    }
     return pck;
 }
 //解析接收到的数据
-Packet* ParsePacket(char* buffer, int len){
+PacketPtr ParsePacket(char* buffer, int len){
     Packet pck;
-    Packet* pck_ptr;
+    PacketPtr pck_ptr;
     //4字节包头，4字节命令号，4字节数据长度，数据
     int i = 0;
     for(;i < len; i++){
@@ -92,7 +104,7 @@ Packet* ParsePacket(char* buffer, int len){
         }
     }
     if(i + 8 > len){// magic 没找到，或找到后不够读 cmd+body_len
-        return NULL;
+        return nullptr;
     }
     pck.header.cmd = *(int*)(buffer + i);
     i += 4;
@@ -102,16 +114,16 @@ Packet* ParsePacket(char* buffer, int len){
     if(pck.header.body_len <= 0 || pck.header.body_len > len - i){  // body 长度越界
         //当len长度为0的时候也要执行，获取的是命令
         if(pck.header.body_len ==0){
-            pck_ptr = (Packet*)malloc(sizeof(PacketHeader));
+            pck_ptr = PacketPtr((Packet*)malloc(sizeof(PacketHeader)));
             memcpy(&pck_ptr->header, &pck.header, sizeof(PacketHeader));
             return pck_ptr;
         }
-        return NULL;
+        return nullptr;
     }
     //创建接受缓存区
-    pck_ptr = (Packet*)malloc(sizeof(PacketHeader) + pck.header.body_len);
+    pck_ptr = PacketPtr((Packet*)malloc(sizeof(PacketHeader) + pck.header.body_len));
     memcpy(pck_ptr->body, buffer + i, pck.header.body_len);
-    memcpy(&pck_ptr->header, &pck.header, sizeof(PacketHeader));
+    memcpy(pck_ptr.get(), &pck.header, sizeof(PacketHeader));
     return pck_ptr;
 }
 
@@ -125,28 +137,29 @@ IStream* g_stream = NULL;          // GDI+ 懒解码，流必须和 Bitmap 一�
 CRITICAL_SECTION g_cri_sec; //锁，避免多线程同时改变一个变量
 DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
     //不停的发送数据，解析数据
-    char* recv_buffer = (char*)malloc(RECV_BUFFER_LEN);
+    std::vector<char> recv_buffer(RECV_BUFFER_LEN);   // 接收缓冲，RAII 自动释放
     int index = 0;   // 累积缓冲：已收到、还没取走的字节数
 
     //先发第一个屏幕请求
-    Packet* req = PackPacket(PACKET_MAGE, CMD_SCREEN, NULL, 0);
-    send(g_connect_socket, (char*)&req->header.magic, GetPacketLen(req), 0);
-    free(req);
+    {
+        PacketPtr req = PackPacket(PACKET_MAGE, CMD_SCREEN, NULL, 0);
+        send(g_connect_socket, (char*)&req->header.magic, GetPacketLen(req), 0);
+    }
 
     while(true){
         //收一个完整包（累积，收不完整就一直 recv，不发请求）
-        Packet* pck = NULL;
-        while(pck == NULL){
-            int len = recv(g_connect_socket, recv_buffer + index, RECV_BUFFER_LEN - index, 0);
+        PacketPtr pck;
+        while(pck == nullptr){
+            int len = recv(g_connect_socket, recv_buffer.data() + index, RECV_BUFFER_LEN - index, 0);
             if(len <= 0) return 0;   //连接断开
             index += len;
-            pck = ParsePacket(recv_buffer, index);
+            pck = ParsePacket(recv_buffer.data(), index);
         }
 
         //这个包解析出来了（数据已复制进 pck），从累积缓冲里挪走，剩下前移
         int pck_len = GetPacketLen(pck);
         index -= pck_len;
-        memmove(recv_buffer, recv_buffer + pck_len, index);
+        memmove(recv_buffer.data(), recv_buffer.data() + pck_len, index);
 
         /*你手里有一袋咖啡豆（pck->body）。咖啡机（GDI+）只认“咖啡粉盒”（IStream），
         不认散装豆子。所以你只能把豆子先磨成粉（写入流），装进粉盒（IStream），才能塞进机器里冲泡。*/
@@ -184,12 +197,11 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
                 }
             }
         }
-        free(pck);
+        pck.reset(); //保持原释放时机，避免在等待下一帧时继续占用屏幕包内存
 
         //这一帧处理完了，才请求下一帧
-        Packet* req = PackPacket(PACKET_MAGE, CMD_SCREEN, NULL, 0);
+        PacketPtr req = PackPacket(PACKET_MAGE, CMD_SCREEN, NULL, 0);
         send(g_connect_socket, (char*)&req->header.magic, GetPacketLen(req), 0);
-        free(req);
         Sleep(200); 
     }
 }
@@ -222,9 +234,8 @@ void DOMOUSEACKTION(int Action, HWND hwnd, WPARAM wPatam, LPARAM lParam, ULONGLO
     mouse.ptXY.x = rxPox;
     mouse.ptXY.y = ryPos;
     if(GetTickCount64()-moustick < 100 && Action == static_cast<int>(ENUM_MOUSE::MOVE)) return; //鼠标移动消息间隔至少100毫秒{
-    Packet* packet = PackPacket(PACKET_MAGE, CMD::CMD_MOUSE, (char*)&mouse, sizeof(Mouse)); //打包数据
+    PacketPtr packet = PackPacket(PACKET_MAGE, CMD::CMD_MOUSE, (char*)&mouse, sizeof(Mouse)); //打包数据
     send(g_connect_socket, (char*)&packet->header.magic, GetPacketLen(packet), 0);
-    free(packet);
     moustick = GetTickCount64(); //更新鼠标移动时间戳
 }
 
@@ -319,9 +330,8 @@ LRESULT CALLBACK winProc(HWND hwnd, UINT msg, WPARAM wPatam, LPARAM lParam){
             Keyboard key_board;
             key_board.virtual_code = wPatam;
             key_board.key_state = 0;   // 0 = 按下（不设 KEYUP 标志）
-            Packet* packet = PackPacket(PACKET_MAGE, CMD::CMD_KEYBOARD, (char*)&key_board, sizeof(Keyboard)); //打包数据
+            PacketPtr packet = PackPacket(PACKET_MAGE, CMD::CMD_KEYBOARD, (char*)&key_board, sizeof(Keyboard)); //打包数据
             send(g_connect_socket, (char*)&packet->header.magic, GetPacketLen(packet), 0);
-            free(packet);
             break;
         }
         case WM_KEYUP:
@@ -329,9 +339,8 @@ LRESULT CALLBACK winProc(HWND hwnd, UINT msg, WPARAM wPatam, LPARAM lParam){
             Keyboard key_board;
             key_board.virtual_code = wPatam;
             key_board.key_state = KEYEVENTF_KEYUP;   // 抬起
-            Packet* packet = PackPacket(PACKET_MAGE, CMD::CMD_KEYBOARD, (char*)&key_board, sizeof(Keyboard)); //打包数据
+            PacketPtr packet = PackPacket(PACKET_MAGE, CMD::CMD_KEYBOARD, (char*)&key_board, sizeof(Keyboard)); //打包数据
             send(g_connect_socket, (char*)&packet->header.magic, GetPacketLen(packet), 0);
-            free(packet);
             break;
         }
         default:

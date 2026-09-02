@@ -4,6 +4,8 @@
 #include <Windows.h> //操作系统接口
 #include <gdiplus.h> //使用GDI+
 #include <iphlpapi.h>   //GetAdaptersAddresses 枚举网卡
+#include <vector>
+#include <memory>
 
 using namespace Gdiplus;
 
@@ -44,6 +46,10 @@ struct Packet{
 };
 #pragma pack(pop) //恢复结构体对齐方式为默认值
 
+//定义智能指针：Packet 用 malloc 分配（body 长度不定），所以删除器要调 free 而不是 delete
+struct PacketDeleter{ void operator()(Packet* p) const { free(p); }};
+using PacketPtr = std::unique_ptr<Packet, PacketDeleter>;
+
 //鼠标信息有哪些？
 //1.按键：左键，右键，中键. 2.状态:按下，抬起，移动. 3.坐标：x,y
 enum class ENUM_MOUSE{
@@ -72,9 +78,9 @@ struct Keyboard{
 };
 
 //解包，提取一次数据
-Packet* ParsePacket(char* buffer, int len){
+PacketPtr ParsePacket(char* buffer, int len){
     Packet pck;
-    Packet* pck_ptr;
+    PacketPtr pck_ptr;
     //4字节包头，4字节命令号，4字节数据长度，数据
     int i = 0;
     for(;i < len; i++){
@@ -101,7 +107,7 @@ Packet* ParsePacket(char* buffer, int len){
     if(pck.header.body_len <= 0 || pck.header.body_len > len - i){  // body 长度越界
         //当len长度为0的时候也要执行，获取的是命令
         if(pck.header.body_len ==0){
-            pck_ptr = (Packet*)malloc(sizeof(PacketHeader));
+            pck_ptr = PacketPtr((Packet*)malloc(sizeof(PacketHeader))); //构造一个临时对象然后移动赋值
             memcpy(&pck_ptr->header, &pck.header, sizeof(PacketHeader));
             return pck_ptr;
         }
@@ -110,21 +116,21 @@ Packet* ParsePacket(char* buffer, int len){
         }
     }
     //创建接受缓存区
-    pck_ptr = (Packet*)malloc(sizeof(PacketHeader) + pck.header.body_len);
+    pck_ptr = PacketPtr((Packet*)malloc(sizeof(PacketHeader) + pck.header.body_len));
     memcpy(pck_ptr->body, buffer + i, pck.header.body_len);
-    memcpy(&pck_ptr->header, &pck.header, sizeof(PacketHeader));
+    memcpy(pck_ptr.get(), &pck.header, sizeof(PacketHeader));
     return pck_ptr;
 }
 //包长, packet的长度
-int GetPacketLen(Packet* pck){
+int GetPacketLen(const PacketPtr& pck){
     if(pck != NULL){
         return pck->header.body_len + sizeof(PacketHeader);
     }
     return 0;
 }
 //封装要发送的数据
-Packet* PackPacket(int magic, int cmd, char* buffer, int buffer_len){
-    Packet* pck = (Packet*)malloc(buffer_len + sizeof(PacketHeader));
+PacketPtr PackPacket(int magic, int cmd, char* buffer, int buffer_len){
+    PacketPtr pck = PacketPtr((Packet*)malloc(buffer_len + sizeof(PacketHeader)));
     pck->header.magic = magic; 
     pck->header.cmd = cmd;
     pck->header.body_len = buffer_len; //数据体长度
@@ -151,7 +157,7 @@ int GetEncoderClsid(const WCHAR* format, CLSID* pClsid){
 }
 
 //处理屏幕命令
-int HandleScreen(Packet* pck){ //这样pck没有被使用到，这是因为pck的body是空，只是请求屏幕数据
+int HandleScreen(const Packet* pck){ //这样pck没有被使用到，这是因为pck的body是空，只是请求屏幕数据
     //GDI+ 初始化和 DPI 感知已移到 main，这里只负责截屏打包
 
     int sWidth  = GetSystemMetrics(SM_CXSCREEN);
@@ -227,10 +233,9 @@ int HandleScreen(Packet* pck){ //这样pck没有被使用到，这是因为pck�
         std::cout << "PNG 字节数: " << len << std::endl;
 
         //发送数据
-        Packet* packet = PackPacket(PACKET_MAGE, CMD_SCREEN, pdata, len);
+        PacketPtr packet = PackPacket(PACKET_MAGE, CMD_SCREEN, pdata, len);
         send(g_connect_socket, (char*)&packet->header.magic, sizeof(PacketHeader) + packet->header.body_len, 0);
         //TODO: 把 pdata 的前 len 个字节塞进 Packet 发回客户端
-        free(packet);
         GlobalUnlock(hCurrent);
         pStream->Release();   // 释放流，连带释放 hMem，不要再 GlobalFree
     } //Bitmap 在这里析构
@@ -240,7 +245,7 @@ int HandleScreen(Packet* pck){ //这样pck没有被使用到，这是因为pck�
     return 0;
 }
 //处理鼠标命令
-int HandleMouse(Packet* pck){
+int HandleMouse(const Packet* pck){
     Mouse mouse;
     memcpy(&mouse.action, pck->body, pck->header.body_len);
     std::cout << "鼠标动作: " << mouse.action << ", 坐标: (" << mouse.ptXY.x << ", " << mouse.ptXY.y << ")" << std::endl;
@@ -290,7 +295,7 @@ int HandleMouse(Packet* pck){
     return 0;
 }
 //处理键盘命令
-int HandleKeyboard(Packet* pck){
+int HandleKeyboard(const Packet* pck){
     Keyboard key_board;
     memcpy(&key_board.virtual_code, pck->body, pck->header.body_len);
     std::cout << "键盘动作: " << key_board.virtual_code << ", 状态: " << key_board.key_state << std::endl;
@@ -308,38 +313,41 @@ int HandleKeyboard(Packet* pck){
     return 0;
 }
 //测试
-int HandleTest(Packet* pck){
+int HandleTest(const Packet* pck){
     return 0;
 }
 
 //处理命令
-int HandleCommand(Packet* pck){
+int HandleCommand(PacketPtr pck){
     int ret = 0;
     switch(pck->header.cmd){
         //发送屏幕
-        case CMD_SCREEN:
-            //给id的线程投递消息，且包含pck的数据地址，瞬间执行，把任务给线程处理，不阻塞主线程
-            if(!PostThreadMessage(handle_screen_thread_id, WM_HANDEL_SCREEN, 0, (LPARAM)pck))
-                free(pck);   //投递失败则没人处理，自己释放，避免泄漏
+        case CMD_SCREEN: {
+            //release() 把所有权交出去，裸指针塞进消息投给线程
+            Packet* raw = pck.release();
+            if(!PostThreadMessage(handle_screen_thread_id, WM_HANDEL_SCREEN, 0, (LPARAM)raw))
+                free(raw);   //投递失败，没人接管，这里释放
             break;
+        }
         //鼠标事件
-        case CMD_MOUSE:
-            if(!PostThreadMessage(handle_mouse_thread_id, WM_HANDEL_MOUSE, 0, (LPARAM)pck))
-                free(pck);
+        case CMD_MOUSE: {
+            Packet* raw = pck.release();
+            if(!PostThreadMessage(handle_mouse_thread_id, WM_HANDEL_MOUSE, 0, (LPARAM)raw))
+                free(raw);
             break;
+        }
         //键盘命令
-        case CMD_KEYBOARD:
-            if(!PostThreadMessage(handle_keyboard_thread_id, WM_HANDEL_KEYBOARD, 0, (LPARAM)pck))
-                free(pck);
+        case CMD_KEYBOARD: {
+            Packet* raw = pck.release();
+            if(!PostThreadMessage(handle_keyboard_thread_id, WM_HANDEL_KEYBOARD, 0, (LPARAM)raw))
+                free(raw);
             break;
-        //测试命令（同步处理，处理完释放）
+        }
+        //测试命令（同步处理，std::move 转所有权，函数结束自动释放）
         case CMD_TEST:
-            ret = HandleTest(pck);
-            free(pck);
             break;
-        //未知命令：没人处理，释放避免泄漏
+        //未知命令：pck 是局部变量，函数结束自动释放
         default:
-            free(pck);
             break;
     }
     return ret;
@@ -351,9 +359,8 @@ DWORD WINAPI HandleScreenThreadFuc(LPVOID lpThreadParameter){
     MSG msg;
     while(GetMessage(&msg, 0, 0, 0)){ //该线程在这里永久的等待消息
         if(msg.message == WM_HANDEL_SCREEN){
-            Packet* pck = (Packet*)msg.lParam; //从消息参数里取出 Packet 指针
-            HandleScreen(pck);
-            free(pck); //处理完后释放 Packet 内存
+            PacketPtr pck((Packet*)msg.lParam);   // 线程持有所有权，作用域结束自动 free
+            HandleScreen(pck.get());               // 借用裸指针给 HandleScreen
         }
     }
     return 0;
@@ -362,9 +369,8 @@ DWORD WINAPI HandleMouseThreadFuc(LPVOID lpThreadParameter){
      MSG msg;
     while(GetMessage(&msg, 0, 0, 0)){
         if(msg.message == WM_HANDEL_MOUSE){
-            Packet* pck = (Packet*)msg.lParam; //从消息参数里取出 Packet 指针
-            HandleMouse(pck);
-            free(pck); //处理完后释放 Packet 内存
+            PacketPtr pck((Packet*)msg.lParam);   // 线程持有所有权，作用域结束自动 free
+            HandleMouse(pck.get());                // 借用裸指针给 HandleMouse
         }
     }
     return 0;
@@ -373,14 +379,12 @@ DWORD WINAPI HandleKeyboardThreadFuc(LPVOID lpThreadParameter){
     MSG msg;
     while(GetMessage(&msg, 0, 0, 0)){
         if(msg.message == WM_HANDEL_KEYBOARD){
-            Packet* pck = (Packet*)msg.lParam; //从消息参数里取出 Packet 指针
-            HandleKeyboard(pck);
-            free(pck); //处理完后释放 Packet 内存
+            PacketPtr pck((Packet*)msg.lParam);   // 线程持有所有权，作用域结束自动 free
+            HandleKeyboard(pck.get());             // 借用裸指针给 HandleKeyboard
         }
     }
     return 0;
 }
-
 
 
 //初始化网络并且开启监听

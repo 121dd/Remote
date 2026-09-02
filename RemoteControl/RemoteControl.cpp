@@ -42,7 +42,8 @@ int main(){
     printf("客户端连接成功,客户端IP: %s,客户端端口: %d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
     //5.等待客户端发送请求; 解决粘包：协议 和丢包：index指向
-    char* buffer = (char*)malloc(BECV_BUFFER_SIZE);//非接收窗口，而是缓冲区（从接收窗口中拷贝到缓冲区中），recv()函数是阻塞的，直到有数据到来，才会继续往下执行
+    std::vector<char> buffer(BECV_BUFFER_SIZE);
+    //非接收窗口，而是缓冲区（从接收窗口中拷贝到缓冲区中），recv()函数是阻塞的，直到有数据到来，才会继续往下执行
     //给他一个指针让他一次处理一个包的内容，多读到的内容的位置通过index保存下来
     //也就是构建一个可持续的缓存区
 
@@ -51,19 +52,19 @@ int main(){
     while(true){
         //返回接收数据的长度, 接收的内容存在buffer中0是接收标志，表示默认接收，阻塞
         //BECVG_BUFFER_SIZE - index代表缓冲区的大小
-        int len = recv(g_connect_socket, buffer + index, BECV_BUFFER_SIZE - index, 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
+        int len = recv(g_connect_socket, buffer.data() + index, BECV_BUFFER_SIZE - index, 0);//把客户端发送的数据拷贝到缓冲区中，sizeof(buffer)是接收数据的长度
         if(len <= 0) break;   //连接断开/出错，退出主循环
         //6.接收数据
         index += len;//缓冲区有效数字的总长度
-        Packet* packet = ParsePacket(buffer, index); //解析数据
+        PacketPtr packet = ParsePacket(buffer.data(), index); //解析数据
 
         //数据不完整，继续接收数据
         while(packet == nullptr){
             //如果解析失败，说明数据不完整，继续接收数据
-            len = recv(g_connect_socket, buffer + index, BECV_BUFFER_SIZE - index, 0);
+            len = recv(g_connect_socket, buffer.data() + index, BECV_BUFFER_SIZE - index, 0);
             if(len <= 0) break;   //断开/出错，跳出内层
             index += len;
-            packet = ParsePacket(buffer, index);
+            packet = ParsePacket(buffer.data(), index);
             if(index >= BECV_BUFFER_SIZE) break;   //防呆：缓冲满仍无完整包，丢弃防死循环
         }
         if(packet == nullptr) break;   //内层跳出后仍无完整包 → 断开/异常，退出
@@ -71,14 +72,13 @@ int main(){
         while(packet != nullptr){
             //如果解析成功，说明数据完整，处理数据
             index = index - GetPacketLen(packet);//把一个包拿走后剩下的长度
-            memmove(buffer, buffer + GetPacketLen(packet), index);//移动把buffer + index
-            HandleCommand(packet); //处理命令
-            packet = (index > 0) ? ParsePacket(buffer, index) : nullptr;   // 继续解析下一个
+            memmove(buffer.data(), buffer.data() + GetPacketLen(packet), index);//移动把buffer + index
+            HandleCommand(std::move(packet)); //把包的所有权转移给 HandleCommand
+            packet = (index > 0) ? ParsePacket(buffer.data(), index) : nullptr;   // 继续解析下一个
         }
     }
     
     //关闭套接字
-    free(buffer);   //buffer 是 malloc 分配的，用 free 释放
     closesocket(g_connect_socket); //关闭客户端套接字
     closesocket(g_listen_socket); //关闭服务器套接字
 
