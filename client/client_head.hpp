@@ -1,4 +1,5 @@
 #include "../socket_send.hpp"
+#include "../screen_protocol.hpp"
 #include <stdio.h>
 #include <iostream>
 #include <memory>
@@ -135,16 +136,18 @@ PacketPtr ParsePacket(char* buffer, int len){
 Gdiplus::Bitmap* g_image = NULL;  // 全局图片，WM_PAINT 绘制要用
 int g_remote_width = -1;  // 远程屏幕宽度，-1 表示未知
 int g_remote_height = -1; // 远程屏幕高度，-1 表示未知
-IStream* g_stream = NULL;          // GDI+ 懒解码，流必须和 Bitmap 一起活着
 CRITICAL_SECTION g_cri_sec; //锁，避免多线程同时改变一个变量
 DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
-    //不停的发送数据，解析数据
     std::vector<char> recv_buffer(RECV_BUFFER_LEN);   // 接收缓冲，RAII 自动释放
     int index = 0;   // 累积缓冲：已收到、还没取走的字节数
+    bool force_full_next = true;
 
-    //先发第一个屏幕请求
+    //首次连接必须请求完整关键帧，之后才能在完整画布上叠加局部更新。
     {
-        PacketPtr req = PackPacket(PACKET_MAGE, CMD_SCREEN, NULL, 0);
+        ScreenRequest request{1};
+        PacketPtr req = PackPacket(
+            PACKET_MAGE, CMD_SCREEN,
+            reinterpret_cast<char*>(&request), sizeof(request));
         if(!g_socket_sender.Send(
                g_connect_socket,
                reinterpret_cast<const char*>(&req->header.magic),
@@ -168,48 +171,82 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
         index -= pck_len;
         memmove(recv_buffer.data(), recv_buffer.data() + pck_len, index);
 
-        /*你手里有一袋咖啡豆（pck->body）。咖啡机（GDI+）只认“咖啡粉盒”（IStream），
-        不认散装豆子。所以你只能把豆子先磨成粉（写入流），装进粉盒（IStream），才能塞进机器里冲泡。*/
-        //把收到的字节数据装进内存流
-        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, pck->header.body_len);
-        if(hMem != NULL){
-            //创建内存流（TRUE 表示流 Release 时自动释放 hMem，之后不要再 GlobalFree）
-            IStream* pStream = NULL;
-            HRESULT ret = CreateStreamOnHGlobal(hMem, TRUE, &pStream);
-            if(ret == S_OK){
-                ULONG length = 0;
-                pStream->Write(pck->body, pck->header.body_len, &length);
-                //把pStream的指针移到开头
-                LARGE_INTEGER lg = {0};
-                pStream->Seek(lg, STREAM_SEEK_SET, NULL);
-
-                //原来 g_image.Load(pStream)，现在用 GDI+ 从流里解码
-                Gdiplus::Bitmap* newImage = Gdiplus::Bitmap::FromStream(pStream);
-                if(newImage != NULL){
-                    //锁，避免多线程同时改变一个变量
-                    EnterCriticalSection(&g_cri_sec);
-                    //换新图前先释放旧的（顺序：先删图，再放流）
-                    if(g_image) delete g_image;
-                    if(g_stream) g_stream->Release();
-                    g_image = newImage;
-                    g_stream = pStream;   //不能 Release！Bitmap 解码 PNG 时还要读它
-                    if(g_remote_width ==-1 && g_remote_height == -1){
-                        g_remote_width = g_image->GetWidth();
-                        g_remote_height = g_image->GetHeight();
-                    }
-                    //解锁
-                    LeaveCriticalSection(&g_cri_sec);
-                    //通知UI线程绘制
-                    InvalidateRect(g_hwnd, NULL, FALSE);
+        bool applied = false;
+        bool changed = false;
+        if(pck->header.cmd == CMD_SCREEN &&
+           pck->header.body_len >= static_cast<int>(sizeof(ScreenUpdateHeader))){
+            ScreenUpdateHeader update{};
+            memcpy(&update, pck->body, sizeof(update));
+            if(IsValidScreenUpdate(update, pck->header.body_len)){
+                if(update.frame_type == SCREEN_FRAME_UNCHANGED){
+                    applied = true;
                 } else {
-                    pStream->Release();   //解码失败，释放流（连带释放 hMem）
+                    const char* png_data = pck->body + sizeof(ScreenUpdateHeader);
+                    HGLOBAL image_memory = GlobalAlloc(GMEM_MOVEABLE, update.image_length);
+                    IStream* image_stream = NULL;
+                    if(image_memory != NULL &&
+                       CreateStreamOnHGlobal(image_memory, TRUE, &image_stream) == S_OK){
+                        ULONG written = 0;
+                        if(image_stream->Write(png_data, update.image_length, &written) == S_OK &&
+                           written == static_cast<ULONG>(update.image_length)){
+                            LARGE_INTEGER beginning{};
+                            image_stream->Seek(beginning, STREAM_SEEK_SET, NULL);
+                            Gdiplus::Bitmap* patch = Gdiplus::Bitmap::FromStream(image_stream);
+                            if(patch != NULL && patch->GetLastStatus() == Gdiplus::Ok &&
+                               patch->GetWidth() == static_cast<UINT>(update.width) &&
+                               patch->GetHeight() == static_cast<UINT>(update.height)){
+                                if(update.frame_type == SCREEN_FRAME_FULL){
+                                    Gdiplus::Bitmap* new_canvas = new Gdiplus::Bitmap(
+                                        update.screen_width, update.screen_height,
+                                        PixelFormat32bppARGB);
+                                    Gdiplus::Graphics canvas_graphics(new_canvas);
+                                    if(canvas_graphics.DrawImage(patch, 0, 0) == Gdiplus::Ok){
+                                        EnterCriticalSection(&g_cri_sec);
+                                        if(g_image) delete g_image;
+                                        g_image = new_canvas;
+                                        g_remote_width = update.screen_width;
+                                        g_remote_height = update.screen_height;
+                                        LeaveCriticalSection(&g_cri_sec);
+                                        applied = true;
+                                        changed = true;
+                                    } else {
+                                        delete new_canvas;
+                                    }
+                                } else {
+                                    EnterCriticalSection(&g_cri_sec);
+                                    if(g_image != NULL &&
+                                       g_remote_width == update.screen_width &&
+                                       g_remote_height == update.screen_height){
+                                        Gdiplus::Graphics canvas_graphics(g_image);
+                                        if(canvas_graphics.DrawImage(patch, update.x, update.y) == Gdiplus::Ok){
+                                            applied = true;
+                                            changed = true;
+                                        }
+                                    }
+                                    LeaveCriticalSection(&g_cri_sec);
+                                }
+                            }
+                            delete patch;
+                        }
+                        image_stream->Release();
+                    } else if(image_memory != NULL){
+                        GlobalFree(image_memory);
+                    }
                 }
             }
         }
+        force_full_next = !applied;
+        if(changed){
+            InvalidateRect(g_hwnd, NULL, FALSE);
+        }
         pck.reset(); //保持原释放时机，避免在等待下一帧时继续占用屏幕包内存
 
-        //这一帧处理完了，才请求下一帧
-        PacketPtr req = PackPacket(PACKET_MAGE, CMD_SCREEN, NULL, 0);
+        //限制轮询到约 20 FPS；无变化帧也不会形成占满 CPU 的请求循环。
+        Sleep(50);
+        ScreenRequest request{force_full_next ? 1 : 0};
+        PacketPtr req = PackPacket(
+            PACKET_MAGE, CMD_SCREEN,
+            reinterpret_cast<char*>(&request), sizeof(request));
         if(!g_socket_sender.Send(
                g_connect_socket,
                reinterpret_cast<const char*>(&req->header.magic),
@@ -223,24 +260,30 @@ void DOMOUSEACKTION(int Action, HWND hwnd, WPARAM wPatam, LPARAM lParam, ULONGLO
 //拿到的是客户区的鼠标位置
     int xPos = LOWORD(lParam); //低字节是x坐标
     int yPos = HIWORD(lParam); //高字节是y坐标
-    if(g_remote_width == -1 || g_remote_height == -1) return;
+    EnterCriticalSection(&g_cri_sec);
+    const int remote_width = g_remote_width;
+    const int remote_height = g_remote_height;
+    LeaveCriticalSection(&g_cri_sec);
+    if(remote_width == -1 || remote_height == -1) return;
     //和 WM_PAINT 一样的"保留宽高比 fit"，算出画面实际绘制的区域
     RECT client_rect;
     GetClientRect(hwnd, &client_rect);
     int client_width = client_rect.right - client_rect.left;
     int client_height = client_rect.bottom - client_rect.top;
-    float scale_w = (float)client_width / g_remote_width;
-    float scale_h = (float)client_height / g_remote_height;
+    if(client_width <= 0 || client_height <= 0) return;
+    float scale_w = (float)client_width / remote_width;
+    float scale_h = (float)client_height / remote_height;
     float scale = scale_w < scale_h ? scale_w : scale_h;
-    int draw_w = (int)(g_remote_width * scale);
-    int draw_h = (int)(g_remote_height * scale);
+    int draw_w = (int)(remote_width * scale);
+    int draw_h = (int)(remote_height * scale);
+    if(draw_w <= 0 || draw_h <= 0) return;
     int draw_x = (client_width - draw_w) / 2;
     int draw_y = (client_height - draw_h) / 2;
     //把客户区坐标换算成远程屏幕坐标（减去留白、按实际绘制区域缩放、夹紧边界）
-    int rxPox = (xPos - draw_x) * g_remote_width / draw_w;
-    int ryPos = (yPos - draw_y) * g_remote_height / draw_h;
-    if(rxPox < 0) rxPox = 0;  if(rxPox > g_remote_width)  rxPox = g_remote_width;
-    if(ryPos < 0) ryPos = 0;  if(ryPos > g_remote_height) ryPos = g_remote_height;
+    int rxPox = (xPos - draw_x) * remote_width / draw_w;
+    int ryPos = (yPos - draw_y) * remote_height / draw_h;
+    if(rxPox < 0) rxPox = 0;  if(rxPox >= remote_width)  rxPox = remote_width - 1;
+    if(ryPos < 0) ryPos = 0;  if(ryPos >= remote_height) ryPos = remote_height - 1;
     //发送数据
     Mouse mouse;
     mouse.action = Action;

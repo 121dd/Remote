@@ -1,5 +1,7 @@
 #include <winsock2.h>   //必须最先：定义 _WINSOCK2API_，否则 iphlpapi.h 不声明 GetAdaptersAddresses
 #include "../socket_send.hpp"
+#include "../dirty_matrix.hpp"
+#include "../screen_protocol.hpp"
 #include <stdio.h>
 #include <iostream>
 #include <Windows.h> //操作系统接口
@@ -7,6 +9,7 @@
 #include <iphlpapi.h>   //GetAdaptersAddresses 枚举网卡
 #include <vector>
 #include <memory>
+#include <cstring>
 
 using namespace Gdiplus;
 
@@ -24,6 +27,11 @@ enum CMD{
 
 SOCKET g_listen_socket;//监听socket
 SOCKET g_connect_socket;//连接socket
+
+//上一张已经成功发送的 32 位 BGRA 屏幕，用于按 64x64 网格检测变化。
+std::vector<unsigned char> g_previous_screen;
+int g_previous_screen_width = 0;
+int g_previous_screen_height = 0;
 
 unsigned long handle_screen_thread_id = 0; //系统分配给这条处理屏幕的“身份证号”
 unsigned long handle_mouse_thread_id = 1; //系统分配给这条处理鼠标的“身份证号”
@@ -157,97 +165,162 @@ int GetEncoderClsid(const WCHAR* format, CLSID* pClsid){
     return -1;
 }
 
-//处理屏幕命令
-int HandleScreen(const Packet* pck){ //这样pck没有被使用到，这是因为pck的body是空，只是请求屏幕数据
-    //GDI+ 初始化和 DPI 感知已移到 main，这里只负责截屏打包
+//处理屏幕命令：按 64x64 网格比较两帧，只编码覆盖脏块的最小矩形。
+int HandleScreen(const Packet* pck){
+    const int screen_width = GetSystemMetrics(SM_CXSCREEN);
+    const int screen_height = GetSystemMetrics(SM_CYSCREEN);
+    const int stride = screen_width * 4;
+    if(screen_width <= 0 || screen_height <= 0) return -1;
 
-    int sWidth  = GetSystemMetrics(SM_CXSCREEN);
-    int sHeight = GetSystemMetrics(SM_CYSCREEN);
-    std::cout << "屏幕宽高: " << sWidth << "x" << sHeight << std::endl;
+    if(pck->header.body_len != 0 && pck->header.body_len != sizeof(ScreenRequest)){
+        return -1;
+    }
+    bool force_full = false;
+    if(pck->header.body_len == sizeof(ScreenRequest)){
+        ScreenRequest request{};
+        memcpy(&request, pck->body, sizeof(request));
+        force_full = request.force_full != 0;
+    }
 
-    //1.拿屏幕 DC 并创建兼容的内存 DC 和位图
-    HDC hScreen = GetDC(NULL); //获取屏幕的DC
-    //“空壳画架”
-    HDC hMemDC = CreateCompatibleDC(hScreen);
-    //真正的“画布”
-    HBITMAP hBitmap = CreateCompatibleBitmap(hScreen, sWidth, sHeight);
-    //绑定
-    HGDIOBJ hOld = SelectObject(hMemDC, hBitmap);
-    bool send_succeeded = false;
+    //使用自顶向下的 32 位 DIB，BitBlt 后可以直接读取连续 BGRA 像素。
+    HDC screen_dc = GetDC(NULL);
+    HDC memory_dc = CreateCompatibleDC(screen_dc);
+    BITMAPINFO bitmap_info{};
+    bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmap_info.bmiHeader.biWidth = screen_width;
+    bitmap_info.bmiHeader.biHeight = -screen_height;
+    bitmap_info.bmiHeader.biPlanes = 1;
+    bitmap_info.bmiHeader.biBitCount = 32;
+    bitmap_info.bmiHeader.biCompression = BI_RGB;
+    void* pixels = nullptr;
+    HBITMAP screen_bitmap = CreateDIBSection(
+        screen_dc, &bitmap_info, DIB_RGB_COLORS, &pixels, NULL, 0);
+    if(screen_dc == NULL || memory_dc == NULL || screen_bitmap == NULL || pixels == nullptr){
+        if(screen_bitmap) DeleteObject(screen_bitmap);
+        if(memory_dc) DeleteDC(memory_dc);
+        if(screen_dc) ReleaseDC(NULL, screen_dc);
+        return -1;
+    }
 
-    //5.把屏幕复制到位图（BitBlt 截屏）
-    BitBlt(hMemDC, 0, 0, sWidth, sHeight, hScreen, 0, 0, SRCCOPY);
+    HGDIOBJ old_bitmap = SelectObject(memory_dc, screen_bitmap);
+    const BOOL captured = BitBlt(
+        memory_dc, 0, 0, screen_width, screen_height,
+        screen_dc, 0, 0, SRCCOPY | CAPTUREBLT);
+    SelectObject(memory_dc, old_bitmap);
+    DeleteDC(memory_dc);
+    ReleaseDC(NULL, screen_dc);
+    if(!captured){
+        DeleteObject(screen_bitmap);
+        return -1;
+    }
 
-    //3.清理 GDI 资源
-    SelectObject(hMemDC, hOld);
-    DeleteDC(hMemDC);
-    ReleaseDC(NULL, hScreen);
+    std::vector<unsigned char> current_screen(
+        static_cast<std::size_t>(stride) * screen_height);
+    memcpy(current_screen.data(), pixels, current_screen.size());
+    DeleteObject(screen_bitmap);
 
-    //4.用 GDI+ 包装 HBITMAP 并保存到内存流
-    //放在作用域块里，让 Bitmap 在函数结束时先析构
-    {
-        Bitmap bitmap(hBitmap, NULL);
+    const bool dimensions_changed =
+        g_previous_screen_width != screen_width ||
+        g_previous_screen_height != screen_height;
+    const unsigned char* previous =
+        (!dimensions_changed && !g_previous_screen.empty())
+            ? g_previous_screen.data() : nullptr;
+    DirtyRegion region = FindDirtyRegion(
+        previous, current_screen.data(), screen_width, screen_height,
+        stride, 64, 40);
+    if(force_full){
+        region = FullFrameRegion(
+            screen_width, screen_height,
+            ((screen_width + 63) / 64) * ((screen_height + 63) / 64));
+    }
 
-        //找到 PNG 编码器的 CLSID
-        CLSID pngClsid;
-        if(GetEncoderClsid(L"image/png", &pngClsid) == -1){
-            std::cout << "找不到 PNG 编码器" << std::endl;
-            DeleteObject(hBitmap);
-            return -1;
-        }
+    ScreenUpdateHeader update{};
+    update.screen_width = screen_width;
+    update.screen_height = screen_height;
+    update.frame_type = SCREEN_FRAME_UNCHANGED;
 
-
-        //句柄是一个"身份证号"或"门票编号"，用来让程序告诉操作系统："我要操作那个资源！"
-        //从堆上申请可变化的内存块（对应 HGLOBAL hMen = GlobalAlloc(GMEM_MOVEABLE, 0)）
-        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, 0); //指向一块空内存
-        if(hMem == NULL){
-            std::cout << "GlobalAlloc 失败" << std::endl;
-            DeleteObject(hBitmap);
-            return -1;
-        }
-
-        //创建内存流（TRUE 表示流 Release 时自动释放 hMem，之后不要再 GlobalFree）
-        IStream* pStream = NULL;
-        HRESULT ret = CreateStreamOnHGlobal(hMem, TRUE, &pStream);
-        if(ret != S_OK){
-            std::cout << "CreateStreamOnHGlobal 失败" << std::endl;
-            GlobalFree(hMem);
-            DeleteObject(hBitmap);
-            return -1;
-        }
-
-        //保存 PNG 到内存流（MinGW 的 Save 第 3 个参数必须传 NULL）
-        Gdiplus::Status st = bitmap.Save(pStream, &pngClsid, NULL); //内存不足导致扩容GlobalReAlloc 
-        //现在 IStream 管理的可能已经不是原来的内存块地址了但 hMem 变量依然保存的是最初的值！
-        if(st != Gdiplus::Ok){
-            std::cout << "保存失败, Status=" << st << std::endl;
-            pStream->Release();   // 释放流，连带释放 hMem
-            DeleteObject(hBitmap);
-            return -1;
-        }
-
-        //流增长时 GlobalReAlloc 可能移动句柄，必须用 GetHGlobalFromStream 重新拿当前句柄，存在hCurrent
-        //否则 GlobalLock 读到的可能不是正确的 PNG 数据
-        HGLOBAL hCurrent = NULL;
-        GetHGlobalFromStream(pStream, &hCurrent); //从流对象里反向拿到内存句柄
-        char* pdata = (char*)GlobalLock(hCurrent);//锁定内存，GlobalLock 返回的是整个内存块的起始地址，它不是从“流指针”位置开始读的。
-        int len = GlobalSize(hCurrent);//获取内存块的实际大小
-        std::cout << "PNG 字节数: " << len << std::endl;
-
-        //发送数据
-        PacketPtr packet = PackPacket(PACKET_MAGE, CMD_SCREEN, pdata, len);
-        send_succeeded = SendAll(
+    //即使画面没变化也必须回复，否则客户端会一直阻塞在 recv。
+    if(!region.has_changes){
+        PacketPtr packet = PackPacket(
+            PACKET_MAGE, CMD_SCREEN,
+            reinterpret_cast<char*>(&update), sizeof(update));
+        return SendAll(
             g_connect_socket,
             reinterpret_cast<const char*>(&packet->header.magic),
-            GetPacketLen(packet));
-        //TODO: 把 pdata 的前 len 个字节塞进 Packet 发回客户端
-        GlobalUnlock(hCurrent);
-        pStream->Release();   // 释放流，连带释放 hMem，不要再 GlobalFree
-    } //Bitmap 在这里析构
+            GetPacketLen(packet)) ? 0 : -1;
+    }
 
-    //释放 HBITMAP
-    DeleteObject(hBitmap);
-    return send_succeeded ? 0 : -1;
+    update.frame_type = region.full_frame ? SCREEN_FRAME_FULL : SCREEN_FRAME_DIRTY;
+    update.x = region.x;
+    update.y = region.y;
+    update.width = region.width;
+    update.height = region.height;
+
+    CLSID png_clsid;
+    if(GetEncoderClsid(L"image/png", &png_clsid) == -1) return -1;
+
+    HGLOBAL stream_memory = GlobalAlloc(GMEM_MOVEABLE, 0);
+    if(stream_memory == NULL) return -1;
+    IStream* stream = NULL;
+    if(CreateStreamOnHGlobal(stream_memory, TRUE, &stream) != S_OK){
+        GlobalFree(stream_memory);
+        return -1;
+    }
+
+    Gdiplus::Bitmap patch(
+        region.width, region.height, stride,
+        PixelFormat32bppRGB, //DIB 的第 4 字节未定义，按 RGB 读取可避免被当成透明 alpha。
+        current_screen.data() +
+            static_cast<std::size_t>(region.y) * stride +
+            static_cast<std::size_t>(region.x) * 4);
+    const Gdiplus::Status encode_status = patch.Save(stream, &png_clsid, NULL);
+    if(encode_status != Gdiplus::Ok){
+        stream->Release();
+        return -1;
+    }
+
+    HGLOBAL current_memory = NULL;
+    if(GetHGlobalFromStream(stream, &current_memory) != S_OK){
+        stream->Release();
+        return -1;
+    }
+    STATSTG stream_stat{};
+    if(stream->Stat(&stream_stat, STATFLAG_NONAME) != S_OK ||
+       stream_stat.cbSize.QuadPart <= 0 ||
+       stream_stat.cbSize.QuadPart > SCREEN_MAX_IMAGE_BYTES){
+        stream->Release();
+        return -1;
+    }
+    char* png_data = static_cast<char*>(GlobalLock(current_memory));
+    const int png_size = static_cast<int>(stream_stat.cbSize.QuadPart);
+    if(png_data == nullptr){
+        if(png_data) GlobalUnlock(current_memory);
+        stream->Release();
+        return -1;
+    }
+
+    update.image_length = png_size;
+    std::vector<char> body(sizeof(update) + update.image_length);
+    memcpy(body.data(), &update, sizeof(update));
+    memcpy(body.data() + sizeof(update), png_data, update.image_length);
+    GlobalUnlock(current_memory);
+    stream->Release();
+
+    PacketPtr packet = PackPacket(
+        PACKET_MAGE, CMD_SCREEN, body.data(), static_cast<int>(body.size()));
+    const bool sent = SendAll(
+        g_connect_socket,
+        reinterpret_cast<const char*>(&packet->header.magic),
+        GetPacketLen(packet));
+    if(sent){
+        g_previous_screen = std::move(current_screen);
+        g_previous_screen_width = screen_width;
+        g_previous_screen_height = screen_height;
+        std::cout << (region.full_frame ? "完整帧" : "脏矩形")
+                  << ": " << region.width << "x" << region.height
+                  << ", PNG字节数: " << update.image_length << std::endl;
+    }
+    return sent ? 0 : -1;
 }
 //处理鼠标命令
 int HandleMouse(const Packet* pck){
@@ -365,7 +438,11 @@ DWORD WINAPI HandleScreenThreadFuc(LPVOID lpThreadParameter){
     while(GetMessage(&msg, 0, 0, 0)){ //该线程在这里永久的等待消息
         if(msg.message == WM_HANDEL_SCREEN){
             PacketPtr pck((Packet*)msg.lParam);   // 线程持有所有权，作用域结束自动 free
-            HandleScreen(pck.get());               // 借用裸指针给 HandleScreen
+            if(HandleScreen(pck.get()) != 0){
+                //请求已经被消费却无法回复时，主动断开，避免客户端永远阻塞在 recv。
+                shutdown(g_connect_socket, SD_BOTH);
+                break;
+            }
         }
     }
     return 0;
