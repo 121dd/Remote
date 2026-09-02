@@ -1,27 +1,5 @@
 //服务器端
-#include <winsock2.h>   //必须最先：定义 _WINSOCK2API_，否则 iphlpapi.h 不声明 GetAdaptersAddresses
 #include "serve.hpp"
-#include <iphlpapi.h>   //GetAdaptersAddresses 枚举网卡
-
-//打印本机所有激活的 IPv4 地址（方便客户端知道该填什么 IP）
-void PrintLocalIPs(){
-    ULONG bufLen = 0;
-    GetAdaptersAddresses(AF_INET, 0, NULL, NULL, &bufLen);
-    IP_ADAPTER_ADDRESSES* addrs = (IP_ADAPTER_ADDRESSES*)malloc(bufLen);
-    if(GetAdaptersAddresses(AF_INET, 0, NULL, addrs, &bufLen) == NO_ERROR){
-        for(IP_ADAPTER_ADDRESSES* a = addrs; a != NULL; a = a->Next){
-            if(a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;   //跳过回环 127.0.0.1
-            if(a->OperStatus != IfOperStatusUp) continue;          //只打印激活的网卡
-            for(IP_ADAPTER_UNICAST_ADDRESS* u = a->FirstUnicastAddress; u != NULL; u = u->Next){
-                if(u->Address.lpSockaddr->sa_family == AF_INET){
-                    char* ip = inet_ntoa(((sockaddr_in*)u->Address.lpSockaddr)->sin_addr);
-                    printf("本机IP: %s (%ls)\n", ip, a->FriendlyName);
-                }
-            }
-        }
-    }
-    free(addrs);
-}
 
 int main(){
     //设置控制台为 UTF-8 编码
@@ -42,6 +20,16 @@ int main(){
         std::cout << "初始化失败" << std::endl;
         return -1;
     }
+
+
+    //为每一个命令开辟一个线程去处理，避免阻塞主线程
+    CreateThread(NULL, 0, HandleScreenThreadFuc, NULL, 0, &handle_screen_thread_id);
+    CreateThread(NULL, 0, HandleMouseThreadFuc, NULL, 0, &handle_mouse_thread_id);
+    CreateThread(NULL, 0, HandleKeyboardThreadFuc, NULL, 0, &handle_keyboard_thread_id);
+    //线程的消息队列在第一次 GetMessage 时才创建，所以刚 CreateThread 完立刻 post 会丢，
+    //这里用 Sleep(100) 等线程把消息队列建好，之后 HandleCommand 里投递的命令才不会丢
+    Sleep(100);
+    //（原来的 PostThreadMessage(WM_HANDEL_INVOKE_MSG_LOOP) 那几行是死代码：投递时队列还没建，一定丢失，已删）
 
     /*listen() 负责“准备一个队列”，并“叫号”（完成三次握手）。客户端连接成功后，操作系统把“连接”这个对象放进队列。
     accept() 负责“从队列里取号”，并返回给程序。*/
@@ -85,13 +73,12 @@ int main(){
             index = index - GetPacketLen(packet);//把一个包拿走后剩下的长度
             memmove(buffer, buffer + GetPacketLen(packet), index);//移动把buffer + index
             HandleCommand(packet); //处理命令
-            free(packet);
             packet = (index > 0) ? ParsePacket(buffer, index) : nullptr;   // 继续解析下一个
         }
     }
     
     //关闭套接字
-    delete[] buffer;
+    free(buffer);   //buffer 是 malloc 分配的，用 free 释放
     closesocket(g_connect_socket); //关闭客户端套接字
     closesocket(g_listen_socket); //关闭服务器套接字
 

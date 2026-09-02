@@ -108,7 +108,7 @@ Packet* ParsePacket(char* buffer, int len){
         }
         return NULL;
     }
-        //创建接受缓存区
+    //创建接受缓存区
     pck_ptr = (Packet*)malloc(sizeof(PacketHeader) + pck.header.body_len);
     memcpy(pck_ptr->body, buffer + i, pck.header.body_len);
     memcpy(&pck_ptr->header, &pck.header, sizeof(PacketHeader));
@@ -190,11 +190,11 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
         Packet* req = PackPacket(PACKET_MAGE, CMD_SCREEN, NULL, 0);
         send(g_connect_socket, (char*)&req->header.magic, GetPacketLen(req), 0);
         free(req);
-        Sleep(100); 
+        Sleep(200); 
     }
 }
 
-void DOMOUSEACKTION(int Action, HWND hwnd, WPARAM wPatam, LPARAM lParam){
+void DOMOUSEACKTION(int Action, HWND hwnd, WPARAM wPatam, LPARAM lParam, ULONGLONG& moustick){
 //拿到的是客户区的鼠标位置
     int xPos = LOWORD(lParam); //低字节是x坐标
     int yPos = HIWORD(lParam); //高字节是y坐标
@@ -221,13 +221,17 @@ void DOMOUSEACKTION(int Action, HWND hwnd, WPARAM wPatam, LPARAM lParam){
     mouse.action = Action;
     mouse.ptXY.x = rxPox;
     mouse.ptXY.y = ryPos;
+    if(GetTickCount64()-moustick < 100 && Action == static_cast<int>(ENUM_MOUSE::MOVE)) return; //鼠标移动消息间隔至少100毫秒{
     Packet* packet = PackPacket(PACKET_MAGE, CMD::CMD_MOUSE, (char*)&mouse, sizeof(Mouse)); //打包数据
     send(g_connect_socket, (char*)&packet->header.magic, GetPacketLen(packet), 0);
     free(packet);
+    moustick = GetTickCount64(); //更新鼠标移动时间戳
 }
 
-//响应，处理消息msg的函数 lParam是鼠标位置，wParam是键盘;
+//响应，处理消息msg的函数
 LRESULT CALLBACK winProc(HWND hwnd, UINT msg, WPARAM wPatam, LPARAM lParam){
+    //获取自系统启动以来经过的毫秒数
+    static ULONGLONG moustick = GetTickCount64(); //鼠标移动的时间戳，避免频繁发送鼠标移动消息
     switch(msg)
     {
         //不擦背景（配合双缓冲，避免白屏闪烁）
@@ -279,35 +283,35 @@ LRESULT CALLBACK winProc(HWND hwnd, UINT msg, WPARAM wPatam, LPARAM lParam){
         }
         //鼠标消息
         case WM_MOUSEMOVE:{//鼠标移动
-            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::MOVE), hwnd, wPatam, lParam);
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::MOVE), hwnd, wPatam, lParam, moustick);
             break;
         }
         case WM_LBUTTONUP: //鼠标左键抬起
-            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::LUP), hwnd, wPatam, lParam);
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::LUP), hwnd, wPatam, lParam, moustick);
             break;
         case WM_LBUTTONDOWN://鼠标左键按下
-            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::LDOWN), hwnd, wPatam, lParam);
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::LDOWN), hwnd, wPatam, lParam, moustick);
             break;
         case WM_RBUTTONUP://鼠标右键抬起
-            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::RUP), hwnd, wPatam, lParam);
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::RUP), hwnd, wPatam, lParam, moustick);
             break;
         case WM_RBUTTONDOWN://鼠标右键按下
-            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::RDOWN), hwnd, wPatam, lParam);
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::RDOWN), hwnd, wPatam, lParam, moustick);
             break;
         case WM_LBUTTONDBLCLK://鼠标左键双击
-            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::LDLICK), hwnd, wPatam, lParam);
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::LDLICK), hwnd, wPatam, lParam, moustick);
             break;
         case WM_RBUTTONDBLCLK://鼠标右键双击
-            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::RDLICK), hwnd, wPatam, lParam);
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::RDLICK), hwnd, wPatam, lParam, moustick);
             break;
         case WM_MBUTTONDBLCLK://鼠标中键双击
-            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::MDLICK), hwnd, wPatam, lParam);
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::MDLICK), hwnd, wPatam, lParam, moustick);
             break;
         case WM_MBUTTONDOWN://鼠标中键按下
-            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::MDOWN), hwnd, wPatam, lParam);
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::MDOWN), hwnd, wPatam, lParam, moustick);
             break;
         case WM_MBUTTONUP://鼠标中键抬起
-            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::MUP), hwnd, wPatam, lParam);
+            DOMOUSEACKTION(static_cast<int>(ENUM_MOUSE::MUP), hwnd, wPatam, lParam, moustick);
             break;
 
         case WM_KEYDOWN:

@@ -1,7 +1,9 @@
+#include <winsock2.h>   //必须最先：定义 _WINSOCK2API_，否则 iphlpapi.h 不声明 GetAdaptersAddresses
 #include <stdio.h>
 #include <iostream>
 #include <Windows.h> //操作系统接口
 #include <gdiplus.h> //使用GDI+
+#include <iphlpapi.h>   //GetAdaptersAddresses 枚举网卡
 
 using namespace Gdiplus;
 
@@ -17,8 +19,16 @@ enum CMD{
     CMD_TEST = 2026
 };
 
-SOCKET g_listen_socket;
-SOCKET g_connect_socket;
+SOCKET g_listen_socket;//监听socket
+SOCKET g_connect_socket;//连接socket
+
+unsigned long handle_screen_thread_id = 0; //系统分配给这条处理屏幕的“身份证号”
+unsigned long handle_mouse_thread_id = 1; //系统分配给这条处理鼠标的“身份证号”
+unsigned long handle_keyboard_thread_id = 2; //系统分配给这条处理键盘的“身份证号”
+#define WM_HANDEL_SCREEN (WM_USER + 1)
+#define WM_HANDEL_MOUSE (WM_USER + 2)
+#define WM_HANDEL_KEYBOARD (WM_USER + 3)
+#define WM_HANDEL_INVOKE_MSG_LOOP (WM_USER + 4) //用来启动消息队列
 
 #pragma pack(push, 1) //设置结构体对齐方式为1字节对齐
 //数据包头部结构体
@@ -141,7 +151,7 @@ int GetEncoderClsid(const WCHAR* format, CLSID* pClsid){
 }
 
 //处理屏幕命令
-int HandleScreen(Packet* pck){
+int HandleScreen(Packet* pck){ //这样pck没有被使用到，这是因为pck的body是空，只是请求屏幕数据
     //GDI+ 初始化和 DPI 感知已移到 main，这里只负责截屏打包
 
     int sWidth  = GetSystemMetrics(SM_CXSCREEN);
@@ -180,7 +190,6 @@ int HandleScreen(Packet* pck){
 
 
         //句柄是一个"身份证号"或"门票编号"，用来让程序告诉操作系统："我要操作那个资源！"
-
         //从堆上申请可变化的内存块（对应 HGLOBAL hMen = GlobalAlloc(GMEM_MOVEABLE, 0)）
         HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, 0); //指向一块空内存
         if(hMem == NULL){
@@ -308,25 +317,71 @@ int HandleCommand(Packet* pck){
     int ret = 0;
     switch(pck->header.cmd){
         //发送屏幕
-        case CMD_SCREEN: 
-            ret = HandleScreen(pck);
+        case CMD_SCREEN:
+            //给id的线程投递消息，且包含pck的数据地址，瞬间执行，把任务给线程处理，不阻塞主线程
+            if(!PostThreadMessage(handle_screen_thread_id, WM_HANDEL_SCREEN, 0, (LPARAM)pck))
+                free(pck);   //投递失败则没人处理，自己释放，避免泄漏
             break;
         //鼠标事件
-        case CMD_MOUSE: 
-            ret = HandleMouse(pck);
+        case CMD_MOUSE:
+            if(!PostThreadMessage(handle_mouse_thread_id, WM_HANDEL_MOUSE, 0, (LPARAM)pck))
+                free(pck);
             break;
         //键盘命令
-        case CMD_KEYBOARD: 
-            ret = HandleKeyboard(pck);
+        case CMD_KEYBOARD:
+            if(!PostThreadMessage(handle_keyboard_thread_id, WM_HANDEL_KEYBOARD, 0, (LPARAM)pck))
+                free(pck);
             break;
-        //测试命令
+        //测试命令（同步处理，处理完释放）
         case CMD_TEST:
             ret = HandleTest(pck);
+            free(pck);
             break;
-        default: break;
+        //未知命令：没人处理，释放避免泄漏
+        default:
+            free(pck);
+            break;
     }
     return ret;
 }
+
+//处理命令的线程  回调函数
+DWORD WINAPI HandleScreenThreadFuc(LPVOID lpThreadParameter){
+    //第一次往线程里面post消息，消息队列还没创建好，消息就丢了
+    MSG msg;
+    while(GetMessage(&msg, 0, 0, 0)){ //该线程在这里永久的等待消息
+        if(msg.message == WM_HANDEL_SCREEN){
+            Packet* pck = (Packet*)msg.lParam; //从消息参数里取出 Packet 指针
+            HandleScreen(pck);
+            free(pck); //处理完后释放 Packet 内存
+        }
+    }
+    return 0;
+}
+DWORD WINAPI HandleMouseThreadFuc(LPVOID lpThreadParameter){
+     MSG msg;
+    while(GetMessage(&msg, 0, 0, 0)){
+        if(msg.message == WM_HANDEL_MOUSE){
+            Packet* pck = (Packet*)msg.lParam; //从消息参数里取出 Packet 指针
+            HandleMouse(pck);
+            free(pck); //处理完后释放 Packet 内存
+        }
+    }
+    return 0;
+}
+DWORD WINAPI HandleKeyboardThreadFuc(LPVOID lpThreadParameter){
+    MSG msg;
+    while(GetMessage(&msg, 0, 0, 0)){
+        if(msg.message == WM_HANDEL_KEYBOARD){
+            Packet* pck = (Packet*)msg.lParam; //从消息参数里取出 Packet 指针
+            HandleKeyboard(pck);
+            free(pck); //处理完后释放 Packet 内存
+        }
+    }
+    return 0;
+}
+
+
 
 //初始化网络并且开启监听
 int InitServer(){
@@ -374,4 +429,24 @@ int InitServer(){
     }
     
     return 0;
+}
+
+//打印本机所有激活的 IPv4 地址（方便客户端知道该填什么 IP）
+void PrintLocalIPs(){
+    ULONG bufLen = 0;
+    GetAdaptersAddresses(AF_INET, 0, NULL, NULL, &bufLen);
+    IP_ADAPTER_ADDRESSES* addrs = (IP_ADAPTER_ADDRESSES*)malloc(bufLen);
+    if(GetAdaptersAddresses(AF_INET, 0, NULL, addrs, &bufLen) == NO_ERROR){
+        for(IP_ADAPTER_ADDRESSES* a = addrs; a != NULL; a = a->Next){
+            if(a->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;   //跳过回环 127.0.0.1
+            if(a->OperStatus != IfOperStatusUp) continue;          //只打印激活的网卡
+            for(IP_ADAPTER_UNICAST_ADDRESS* u = a->FirstUnicastAddress; u != NULL; u = u->Next){
+                if(u->Address.lpSockaddr->sa_family == AF_INET){
+                    char* ip = inet_ntoa(((sockaddr_in*)u->Address.lpSockaddr)->sin_addr);
+                    printf("本机IP: %s (%ls)\n", ip, a->FriendlyName);
+                }
+            }
+        }
+    }
+    free(addrs);
 }
