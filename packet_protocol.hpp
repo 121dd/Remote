@@ -127,7 +127,7 @@ private:
     PacketHeader header_{};
 
     // 唯一拥有的连续网络数据，内容是“包头 + 包体”；析构时自动释放。
-    std::unique_ptr<std::uint8_t[]> bytes_;
+    std::unique_ptr<std::uint8_t[]> bytes_; //用指针去代替柔性数值
 
     // bytes_ 的总字节数，即 sizeof(PacketHeader) + body_length。
     std::size_t size_{0};

@@ -1,8 +1,5 @@
 .claude/
 .vscode/
-docs/
-tasks/
-AGENTS.md
 question.txt
 开发记录.text
 远程桌面流畅度优化与架构升级说明.txt
