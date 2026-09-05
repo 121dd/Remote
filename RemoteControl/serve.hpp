@@ -2,6 +2,7 @@
 #include "../socket_send.hpp"
 #include "../dirty_matrix.hpp"
 #include "../screen_protocol.hpp"
+#include "../packet_protocol.hpp"
 #include <stdio.h>
 #include <iostream>
 #include <Windows.h> //操作系统接口
@@ -16,15 +17,6 @@ using namespace Gdiplus;
 #pragma comment(lib, "ws2_32.lib") //链接库文件，Windows Socket 2.0 库文件
 
 #define BECV_BUFFER_SIZE 1024*1024*10
-#define PACKET_MAGE 0x55AA77CC
-//枚举（enum）定义, 给枚举成员赋值了 1、2、4 这样的二进制位标志（Bit Flags）值。
-enum CMD{
-    CMD_SCREEN = 1,
-    CMD_MOUSE = 2,
-    CMD_KEYBOARD = 4,
-    CMD_TEST = 2026
-};
-
 SOCKET g_listen_socket;//监听socket
 SOCKET g_connect_socket;//连接socket
 
@@ -40,24 +32,6 @@ unsigned long handle_keyboard_thread_id = 2; //系统分配给这条处理键盘
 #define WM_HANDEL_MOUSE (WM_USER + 2)
 #define WM_HANDEL_KEYBOARD (WM_USER + 3)
 #define WM_HANDEL_INVOKE_MSG_LOOP (WM_USER + 4) //用来启动消息队列
-
-#pragma pack(push, 1) //设置结构体对齐方式为1字节对齐
-//数据包头部结构体
-struct PacketHeader{
-    int magic; //魔数，用于标识数据包的合法性
-    int cmd; //四字节命令号
-    int body_len; //数据体长度
-};
-//数据包结构体
-struct Packet{
-    PacketHeader header; //数据包头部
-    char body[]; //数据包体, 不固定长度
-};
-#pragma pack(pop) //恢复结构体对齐方式为默认值
-
-//定义智能指针：Packet 用 malloc 分配（body 长度不定），所以删除器要调 free 而不是 delete
-struct PacketDeleter{ void operator()(Packet* p) const { free(p); }};
-using PacketPtr = std::unique_ptr<Packet, PacketDeleter>;
 
 //鼠标信息有哪些？
 //1.按键：左键，右键，中键. 2.状态:按下，抬起，移动. 3.坐标：x,y
@@ -86,67 +60,6 @@ struct Keyboard{
     int key_state;//按键状态 0:抬起 1:按下
 };
 
-//解包，提取一次数据
-PacketPtr ParsePacket(char* buffer, int len){
-    Packet pck;
-    PacketPtr pck_ptr;
-    //4字节包头，4字节命令号，4字节数据长度，数据
-    int i = 0;
-    for(;i < len; i++){
-        //找包头
-        //当i=0时，int*第一个地址开始解析为int
-        //int类型就代表再往后4个字节的内容，*(int*)(buffer + i)就是把buffer+i的地址强制转换为int*类型，然后取这个地址的值
-        if(*(int*)(buffer + i) == 0x55AA77CC){
-            //找到了包头
-            pck.header.magic = *(int*)(buffer + i);
-            i += 4;
-            break;
-        }
-    }
-    if(i + 8 > len){// magic 没找到，或找到后不够读 cmd+body_len
-        return nullptr;
-    }
-    pck.header.cmd = *(int*)(buffer + i);
-    i += 4;
-    pck.header.body_len = *(int*)(buffer + i);
-    i += 4;
-    //获取数据,必须先创建pck去存pck.header.body_len不然不知道长度
-
-    //当len长度为0的时候也要执行
-    if(pck.header.body_len <= 0 || pck.header.body_len > len - i){  // body 长度越界
-        //当len长度为0的时候也要执行，获取的是命令
-        if(pck.header.body_len ==0){
-            pck_ptr = PacketPtr((Packet*)malloc(sizeof(PacketHeader))); //构造一个临时对象然后移动赋值
-            memcpy(&pck_ptr->header, &pck.header, sizeof(PacketHeader));
-            return pck_ptr;
-        }
-        else{
-            return nullptr;
-        }
-    }
-    //创建接受缓存区
-    pck_ptr = PacketPtr((Packet*)malloc(sizeof(PacketHeader) + pck.header.body_len));
-    memcpy(pck_ptr->body, buffer + i, pck.header.body_len);
-    memcpy(pck_ptr.get(), &pck.header, sizeof(PacketHeader));
-    return pck_ptr;
-}
-//包长, packet的长度
-int GetPacketLen(const PacketPtr& pck){
-    if(pck != NULL){
-        return pck->header.body_len + sizeof(PacketHeader);
-    }
-    return 0;
-}
-//封装要发送的数据
-PacketPtr PackPacket(int magic, int cmd, char* buffer, int buffer_len){
-    PacketPtr pck = PacketPtr((Packet*)malloc(buffer_len + sizeof(PacketHeader)));
-    pck->header.magic = magic; 
-    pck->header.cmd = cmd;
-    pck->header.body_len = buffer_len; //数据体长度
-    memcpy(pck->body, buffer, pck->header.body_len); //把buffer中的数据拷贝到packet的body中
-    return pck;
-}
-
 //查找指定 MIME 类型的图片编码器 CLSID（GDI+ 没有 ImageFormatPNG 这种常量，要自己查）
 int GetEncoderClsid(const WCHAR* format, CLSID* pClsid){
     UINT num = 0, size = 0;
@@ -166,19 +79,20 @@ int GetEncoderClsid(const WCHAR* format, CLSID* pClsid){
 }
 
 //处理屏幕命令：按 64x64 网格比较两帧，只编码覆盖脏块的最小矩形。
-int HandleScreen(const Packet* pck){
+int HandleScreen(const remote::PacketBuffer& pck){
     const int screen_width = GetSystemMetrics(SM_CXSCREEN);
     const int screen_height = GetSystemMetrics(SM_CYSCREEN);
     const int stride = screen_width * 4;
     if(screen_width <= 0 || screen_height <= 0) return -1;
 
-    if(pck->header.body_len != 0 && pck->header.body_len != sizeof(ScreenRequest)){
+    if(pck.header().body_length != 0 &&
+       pck.header().body_length != sizeof(ScreenRequest)){
         return -1;
     }
     bool force_full = false;
-    if(pck->header.body_len == sizeof(ScreenRequest)){
+    if(pck.header().body_length == sizeof(ScreenRequest)){
         ScreenRequest request{};
-        memcpy(&request, pck->body, sizeof(request));
+        memcpy(&request, pck.body(), sizeof(request));
         force_full = request.force_full != 0;
     }
 
@@ -241,13 +155,12 @@ int HandleScreen(const Packet* pck){
 
     //即使画面没变化也必须回复，否则客户端会一直阻塞在 recv。
     if(!region.has_changes){
-        PacketPtr packet = PackPacket(
-            PACKET_MAGE, CMD_SCREEN,
-            reinterpret_cast<char*>(&update), sizeof(update));
+        auto packet = remote::PacketBuffer::Build(
+            remote::Command::Screen, &update, sizeof(update));
         return SendAll(
             g_connect_socket,
-            reinterpret_cast<const char*>(&packet->header.magic),
-            GetPacketLen(packet)) ? 0 : -1;
+            reinterpret_cast<const char*>(packet.data()),
+            static_cast<int>(packet.size())) ? 0 : -1;
     }
 
     update.frame_type = region.full_frame ? SCREEN_FRAME_FULL : SCREEN_FRAME_DIRTY;
@@ -306,12 +219,12 @@ int HandleScreen(const Packet* pck){
     GlobalUnlock(current_memory);
     stream->Release();
 
-    PacketPtr packet = PackPacket(
-        PACKET_MAGE, CMD_SCREEN, body.data(), static_cast<int>(body.size()));
+    auto packet = remote::PacketBuffer::Build(
+        remote::Command::Screen, body.data(), body.size());
     const bool sent = SendAll(
         g_connect_socket,
-        reinterpret_cast<const char*>(&packet->header.magic),
-        GetPacketLen(packet));
+        reinterpret_cast<const char*>(packet.data()),
+        static_cast<int>(packet.size()));
     if(sent){
         g_previous_screen = std::move(current_screen);
         g_previous_screen_width = screen_width;
@@ -323,9 +236,9 @@ int HandleScreen(const Packet* pck){
     return sent ? 0 : -1;
 }
 //处理鼠标命令
-int HandleMouse(const Packet* pck){
+int HandleMouse(const remote::PacketBuffer& pck){
     Mouse mouse;
-    memcpy(&mouse.action, pck->body, pck->header.body_len);
+    memcpy(&mouse.action, pck.body(), pck.header().body_length);
     std::cout << "鼠标动作: " << mouse.action << ", 坐标: (" << mouse.ptXY.x << ", " << mouse.ptXY.y << ")" << std::endl;
     //模拟鼠标事件
     //设置鼠标位置
@@ -373,9 +286,9 @@ int HandleMouse(const Packet* pck){
     return 0;
 }
 //处理键盘命令
-int HandleKeyboard(const Packet* pck){
+int HandleKeyboard(const remote::PacketBuffer& pck){
     Keyboard key_board;
-    memcpy(&key_board.virtual_code, pck->body, pck->header.body_len);
+    memcpy(&key_board.virtual_code, pck.body(), pck.header().body_length);
     std::cout << "键盘动作: " << key_board.virtual_code << ", 状态: " << key_board.key_state << std::endl;
     INPUT input = {0};
     input.type = INPUT_KEYBOARD; //输入类型为键盘
@@ -391,38 +304,40 @@ int HandleKeyboard(const Packet* pck){
     return 0;
 }
 //测试
-int HandleTest(const Packet* pck){
+int HandleTest(const remote::PacketBuffer& pck){
     return 0;
 }
 
 //处理命令
-int HandleCommand(PacketPtr pck){
+int HandleCommand(std::unique_ptr<remote::PacketBuffer> pck){
     int ret = 0;
-    switch(pck->header.cmd){
+    switch(static_cast<remote::Command>(pck->header().command)){
         //发送屏幕
-        case CMD_SCREEN: {
-            //release() 把所有权交出去，裸指针塞进消息投给线程
-            Packet* raw = pck.release();
+        case remote::Command::Screen: {
+            remote::PacketBuffer* raw = pck.get();
             if(!PostThreadMessage(handle_screen_thread_id, WM_HANDEL_SCREEN, 0, (LPARAM)raw))
-                free(raw);   //投递失败，没人接管，这里释放
+                break;
+            pck.release();
             break;
         }
         //鼠标事件
-        case CMD_MOUSE: {
-            Packet* raw = pck.release();
+        case remote::Command::Mouse: {
+            remote::PacketBuffer* raw = pck.get();
             if(!PostThreadMessage(handle_mouse_thread_id, WM_HANDEL_MOUSE, 0, (LPARAM)raw))
-                free(raw);
+                break;
+            pck.release();
             break;
         }
         //键盘命令
-        case CMD_KEYBOARD: {
-            Packet* raw = pck.release();
+        case remote::Command::Keyboard: {
+            remote::PacketBuffer* raw = pck.get();
             if(!PostThreadMessage(handle_keyboard_thread_id, WM_HANDEL_KEYBOARD, 0, (LPARAM)raw))
-                free(raw);
+                break;
+            pck.release();
             break;
         }
         //测试命令（同步处理，std::move 转所有权，函数结束自动释放）
-        case CMD_TEST:
+        case remote::Command::Test:
             break;
         //未知命令：pck 是局部变量，函数结束自动释放
         default:
@@ -437,8 +352,9 @@ DWORD WINAPI HandleScreenThreadFuc(LPVOID lpThreadParameter){
     MSG msg;
     while(GetMessage(&msg, 0, 0, 0)){ //该线程在这里永久的等待消息
         if(msg.message == WM_HANDEL_SCREEN){
-            PacketPtr pck((Packet*)msg.lParam);   // 线程持有所有权，作用域结束自动 free
-            if(HandleScreen(pck.get()) != 0){
+            std::unique_ptr<remote::PacketBuffer> pck(
+                reinterpret_cast<remote::PacketBuffer*>(msg.lParam));
+            if(HandleScreen(*pck) != 0){
                 //请求已经被消费却无法回复时，主动断开，避免客户端永远阻塞在 recv。
                 shutdown(g_connect_socket, SD_BOTH);
                 break;
@@ -451,8 +367,9 @@ DWORD WINAPI HandleMouseThreadFuc(LPVOID lpThreadParameter){
      MSG msg;
     while(GetMessage(&msg, 0, 0, 0)){
         if(msg.message == WM_HANDEL_MOUSE){
-            PacketPtr pck((Packet*)msg.lParam);   // 线程持有所有权，作用域结束自动 free
-            HandleMouse(pck.get());                // 借用裸指针给 HandleMouse
+            std::unique_ptr<remote::PacketBuffer> pck(
+                reinterpret_cast<remote::PacketBuffer*>(msg.lParam));
+            HandleMouse(*pck);
         }
     }
     return 0;
@@ -461,8 +378,9 @@ DWORD WINAPI HandleKeyboardThreadFuc(LPVOID lpThreadParameter){
     MSG msg;
     while(GetMessage(&msg, 0, 0, 0)){
         if(msg.message == WM_HANDEL_KEYBOARD){
-            PacketPtr pck((Packet*)msg.lParam);   // 线程持有所有权，作用域结束自动 free
-            HandleKeyboard(pck.get());             // 借用裸指针给 HandleKeyboard
+            std::unique_ptr<remote::PacketBuffer> pck(
+                reinterpret_cast<remote::PacketBuffer*>(msg.lParam));
+            HandleKeyboard(*pck);
         }
     }
     return 0;

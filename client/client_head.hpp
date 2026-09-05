@@ -1,5 +1,6 @@
 #include "../socket_send.hpp"
 #include "../screen_protocol.hpp"
+#include "../packet_protocol.hpp"
 #include <stdio.h>
 #include <iostream>
 #include <memory>
@@ -9,40 +10,10 @@
 using namespace Gdiplus;
 #pragma comment(lib, "ws2_32.lib") //链接库文件，Windows Socket 2.0 库文件
 
-enum CMD{
-    CMD_SCREEN = 1,
-    CMD_MOUSE = 2,
-    CMD_KEYBOARD = 4,
-    CMD_TEST = 2026
-};
-
 #define RECV_BUFFER_LEN 1024 *1024*10
-#define PACKET_MAGE 0x55AA77CC
 SOCKET g_connect_socket;
 SocketSender g_socket_sender;
 HWND g_hwnd = NULL; 
-
-//只要是你通过网络发送的二进制数据，定义结构体时必须确保它在任何平台上大小都一样！
-//网络通信（Socket 收发）
-#pragma pack(push, 1) //设置结构体对齐方式为1字节对齐
-struct PacketHeader{//数据包头部结构体
-    int magic; //魔数，用于标识数据包的合法性
-    int cmd; //四字节命令号
-    int body_len; //数据体长度
-};
-struct Packet{//数据包结构体
-    PacketHeader header; //数据包头部
-    char body[]; //数据包体, 不固定长度
-};
-#pragma pack(pop) //恢复结构体对齐方式为默认值
-
-// Packet 使用 malloc 分配，智能指针析构时必须用 free 释放。
-struct PacketDeleter{
-    void operator()(Packet* packet) const noexcept{
-        free(packet);
-    }
-};
-using PacketPtr = std::unique_ptr<Packet, PacketDeleter>;
 
 //鼠标信息有哪些？
 //1.按键：左键，右键，中键. 2.状态:按下，抬起，移动. 3.坐标：x,y
@@ -71,66 +42,6 @@ struct Keyboard{
     int key_state;//按键状态 0:抬起 1:按下
 };
 
-//包长, packet的长度
-int GetPacketLen(const PacketPtr& pck){
-    if(pck != nullptr){
-        return pck->header.body_len + sizeof(PacketHeader);
-    }
-    return 0;
-}
-//封装要发送的数据
-PacketPtr PackPacket(int magic, int cmd, char* buffer, int buffer_len){
-    PacketPtr pck((Packet*)malloc(buffer_len + sizeof(PacketHeader)));
-    pck->header.magic = magic; 
-    pck->header.cmd = cmd;
-    pck->header.body_len = buffer_len; //数据体长度
-    if(buffer_len > 0){
-        memcpy(pck->body, buffer, pck->header.body_len); //把buffer中的数据拷贝到packet的body中
-    }
-    return pck;
-}
-//解析接收到的数据
-PacketPtr ParsePacket(char* buffer, int len){
-    Packet pck;
-    PacketPtr pck_ptr;
-    //4字节包头，4字节命令号，4字节数据长度，数据
-    int i = 0;
-    for(;i < len; i++){
-        //找包头
-        //当i=0时，int*第一个地址开始解析为int
-        //int类型就代表再往后4个字节的内容，*(int*)(buffer + i)就是把buffer+i的地址强制转换为int*类型，然后取这个地址的值
-        if(*(int*)(buffer + i) == PACKET_MAGE){
-            //找到了包头
-            pck.header.magic = *(int*)(buffer + i);
-            i += 4;
-            break;
-        }
-    }
-    if(i + 8 > len){// magic 没找到，或找到后不够读 cmd+body_len
-        return nullptr;
-    }
-    pck.header.cmd = *(int*)(buffer + i);
-    i += 4;
-    pck.header.body_len = *(int*)(buffer + i);
-    i += 4;
-    //获取数据,必须先创建pck去存pck.header.body_len不然不知道长度
-    if(pck.header.body_len <= 0 || pck.header.body_len > len - i){  // body 长度越界
-        //当len长度为0的时候也要执行，获取的是命令
-        if(pck.header.body_len ==0){
-            pck_ptr = PacketPtr((Packet*)malloc(sizeof(PacketHeader)));
-            memcpy(&pck_ptr->header, &pck.header, sizeof(PacketHeader));
-            return pck_ptr;
-        }
-        return nullptr;
-    }
-    //创建接受缓存区
-    pck_ptr = PacketPtr((Packet*)malloc(sizeof(PacketHeader) + pck.header.body_len));
-    memcpy(pck_ptr->body, buffer + i, pck.header.body_len);
-    memcpy(pck_ptr.get(), &pck.header, sizeof(PacketHeader));
-    return pck_ptr;
-}
-
-
 //开辟一条新的线程，用来不断接受和发送对屏幕数据的请求和数据
 //返回值 调用约定 函数名
 Gdiplus::Bitmap* g_image = NULL;  // 全局图片，WM_PAINT 绘制要用
@@ -145,43 +56,59 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
     //首次连接必须请求完整关键帧，之后才能在完整画布上叠加局部更新。
     {
         ScreenRequest request{1};
-        PacketPtr req = PackPacket(
-            PACKET_MAGE, CMD_SCREEN,
-            reinterpret_cast<char*>(&request), sizeof(request));
+        auto req = remote::PacketBuffer::Build(
+            remote::Command::Screen, &request, sizeof(request));
         if(!g_socket_sender.Send(
                g_connect_socket,
-               reinterpret_cast<const char*>(&req->header.magic),
-               GetPacketLen(req))){
+               reinterpret_cast<const char*>(req.data()),
+               static_cast<int>(req.size()))){
             return 0;
         }
     }
 
     while(true){
         //收一个完整包（累积，收不完整就一直 recv，不发请求）
-        PacketPtr pck;
-        while(pck == nullptr){
+        std::optional<remote::PacketBuffer> pck;
+        while(!pck.has_value()){
             int len = recv(g_connect_socket, recv_buffer.data() + index, RECV_BUFFER_LEN - index, 0);
             if(len <= 0) return 0;   //连接断开
             index += len;
-            pck = ParsePacket(recv_buffer.data(), index);
-        }
+            auto parsed = remote::ParsePacket(
+                reinterpret_cast<const std::uint8_t*>(recv_buffer.data()),
+                static_cast<std::size_t>(index));
+            if(parsed.status == remote::ParseStatus::Invalid) return 0;
+            if(parsed.status == remote::ParseStatus::Incomplete){
+                if(parsed.discarded_prefix > 0){
+                    index -= static_cast<int>(parsed.discarded_prefix);
+                    memmove(
+                        recv_buffer.data(),
+                        recv_buffer.data() + parsed.discarded_prefix,
+                        static_cast<std::size_t>(index));
+                }
+                continue;
+            }
 
-        //这个包解析出来了（数据已复制进 pck），从累积缓冲里挪走，剩下前移
-        int pck_len = GetPacketLen(pck);
-        index -= pck_len;
-        memmove(recv_buffer.data(), recv_buffer.data() + pck_len, index);
+            const std::size_t consumed =
+                parsed.discarded_prefix + parsed.packet_length;
+            pck = std::move(parsed.packet.value());
+            index -= static_cast<int>(consumed);
+            memmove(
+                recv_buffer.data(), recv_buffer.data() + consumed,
+                static_cast<std::size_t>(index));
+        }
 
         bool applied = false;
         bool changed = false;
-        if(pck->header.cmd == CMD_SCREEN &&
-           pck->header.body_len >= static_cast<int>(sizeof(ScreenUpdateHeader))){
+        if(pck->header().command == static_cast<std::int32_t>(remote::Command::Screen) &&
+           pck->header().body_length >= static_cast<int>(sizeof(ScreenUpdateHeader))){
             ScreenUpdateHeader update{};
-            memcpy(&update, pck->body, sizeof(update));
-            if(IsValidScreenUpdate(update, pck->header.body_len)){
+            memcpy(&update, pck->body(), sizeof(update));
+            if(IsValidScreenUpdate(update, pck->header().body_length)){
                 if(update.frame_type == SCREEN_FRAME_UNCHANGED){
                     applied = true;
                 } else {
-                    const char* png_data = pck->body + sizeof(ScreenUpdateHeader);
+                    const char* png_data = reinterpret_cast<const char*>(
+                        pck->body() + sizeof(ScreenUpdateHeader));
                     HGLOBAL image_memory = GlobalAlloc(GMEM_MOVEABLE, update.image_length);
                     IStream* image_stream = NULL;
                     if(image_memory != NULL &&
@@ -244,13 +171,12 @@ DWORD WINAPI SendScreenCallBack (LPVOID lpThreadParameter){
         //限制轮询到约 20 FPS；无变化帧也不会形成占满 CPU 的请求循环。
         Sleep(50);
         ScreenRequest request{force_full_next ? 1 : 0};
-        PacketPtr req = PackPacket(
-            PACKET_MAGE, CMD_SCREEN,
-            reinterpret_cast<char*>(&request), sizeof(request));
+        auto req = remote::PacketBuffer::Build(
+            remote::Command::Screen, &request, sizeof(request));
         if(!g_socket_sender.Send(
                g_connect_socket,
-               reinterpret_cast<const char*>(&req->header.magic),
-               GetPacketLen(req))){
+               reinterpret_cast<const char*>(req.data()),
+               static_cast<int>(req.size()))){
             return 0;
         }
     }
@@ -290,11 +216,12 @@ void DOMOUSEACKTION(int Action, HWND hwnd, WPARAM wPatam, LPARAM lParam, ULONGLO
     mouse.ptXY.x = rxPox;
     mouse.ptXY.y = ryPos;
     if(GetTickCount64()-moustick < 50 && Action == static_cast<int>(ENUM_MOUSE::MOVE)) return; //鼠标移动消息间隔至少100毫秒{
-    PacketPtr packet = PackPacket(PACKET_MAGE, CMD::CMD_MOUSE, (char*)&mouse, sizeof(Mouse)); //打包数据
+    auto packet = remote::PacketBuffer::Build(
+        remote::Command::Mouse, &mouse, sizeof(mouse));
     if(!g_socket_sender.Send(
            g_connect_socket,
-           reinterpret_cast<const char*>(&packet->header.magic),
-           GetPacketLen(packet))){
+           reinterpret_cast<const char*>(packet.data()),
+           static_cast<int>(packet.size()))){
         return;
     }
     moustick = GetTickCount64(); //更新鼠标移动时间戳
@@ -391,11 +318,12 @@ LRESULT CALLBACK winProc(HWND hwnd, UINT msg, WPARAM wPatam, LPARAM lParam){
             Keyboard key_board;
             key_board.virtual_code = wPatam;
             key_board.key_state = 0;   // 0 = 按下（不设 KEYUP 标志）
-            PacketPtr packet = PackPacket(PACKET_MAGE, CMD::CMD_KEYBOARD, (char*)&key_board, sizeof(Keyboard)); //打包数据
+            auto packet = remote::PacketBuffer::Build(
+                remote::Command::Keyboard, &key_board, sizeof(key_board));
             g_socket_sender.Send(
                 g_connect_socket,
-                reinterpret_cast<const char*>(&packet->header.magic),
-                GetPacketLen(packet));
+                reinterpret_cast<const char*>(packet.data()),
+                static_cast<int>(packet.size()));
             break;
         }
         case WM_KEYUP:
@@ -403,11 +331,12 @@ LRESULT CALLBACK winProc(HWND hwnd, UINT msg, WPARAM wPatam, LPARAM lParam){
             Keyboard key_board;
             key_board.virtual_code = wPatam;
             key_board.key_state = KEYEVENTF_KEYUP;   // 抬起
-            PacketPtr packet = PackPacket(PACKET_MAGE, CMD::CMD_KEYBOARD, (char*)&key_board, sizeof(Keyboard)); //打包数据
+            auto packet = remote::PacketBuffer::Build(
+                remote::Command::Keyboard, &key_board, sizeof(key_board));
             g_socket_sender.Send(
                 g_connect_socket,
-                reinterpret_cast<const char*>(&packet->header.magic),
-                GetPacketLen(packet));
+                reinterpret_cast<const char*>(packet.data()),
+                static_cast<int>(packet.size()));
             break;
         }
         default:

@@ -47,8 +47,7 @@ int main(){
     //给他一个指针让他一次处理一个包的内容，多读到的内容的位置通过index保存下来
     //也就是构建一个可持续的缓存区
 
-    int index = 0;
-    int packet_len = 0;
+    int index = 0; //去除缓存区buffer中已经解析过的数据，保留半包未解析的数据
     while(true){
         //返回接收数据的长度, 接收的内容存在buffer中0是接收标志，表示默认接收，阻塞
         //BECVG_BUFFER_SIZE - index代表缓冲区的大小
@@ -56,25 +55,46 @@ int main(){
         if(len <= 0) break;   //连接断开/出错，退出主循环
         //6.接收数据
         index += len;//缓冲区有效数字的总长度
-        PacketPtr packet = ParsePacket(buffer.data(), index); //解析数据
+        auto parsed = remote::ParsePacket(
+            reinterpret_cast<const std::uint8_t*>(buffer.data()),
+            static_cast<std::size_t>(index));
 
         //数据不完整，继续接收数据
-        while(packet == nullptr){
+        while(parsed.status == remote::ParseStatus::Incomplete){
+            if(parsed.discarded_prefix > 0){
+                index -= static_cast<int>(parsed.discarded_prefix);
+                memmove(
+                    buffer.data(), buffer.data() + parsed.discarded_prefix,
+                    static_cast<std::size_t>(index)); //丢弃discarded_prefix
+            }
             //如果解析失败，说明数据不完整，继续接收数据
             len = recv(g_connect_socket, buffer.data() + index, BECV_BUFFER_SIZE - index, 0);
             if(len <= 0) break;   //断开/出错，跳出内层
             index += len;
-            packet = ParsePacket(buffer.data(), index);
+            parsed = remote::ParsePacket(
+                reinterpret_cast<const std::uint8_t*>(buffer.data()),
+                static_cast<std::size_t>(index));
             if(index >= BECV_BUFFER_SIZE) break;   //防呆：缓冲满仍无完整包，丢弃防死循环
         }
-        if(packet == nullptr) break;   //内层跳出后仍无完整包 → 断开/异常，退出
+        //如果都溢出了，就说明全是无效包
+        if(parsed.status != remote::ParseStatus::Complete) break;
         //已经有数据就都处理完再接收下一个数据
-        while(packet != nullptr){
+        while(parsed.status == remote::ParseStatus::Complete){
             //如果解析成功，说明数据完整，处理数据
-            index = index - GetPacketLen(packet);//把一个包拿走后剩下的长度
-            memmove(buffer.data(), buffer.data() + GetPacketLen(packet), index);//移动把buffer + index
-            HandleCommand(std::move(packet)); //把包的所有权转移给 HandleCommand
-            packet = (index > 0) ? ParsePacket(buffer.data(), index) : nullptr;   // 继续解析下一个
+            const std::size_t consumed = //计算总长度（包括要丢弃的数据）
+                parsed.discarded_prefix + parsed.packet_length;
+            index -= static_cast<int>(consumed);
+            memmove(
+                buffer.data(), buffer.data() + consumed,
+                static_cast<std::size_t>(index));
+            auto packet = std::make_unique<remote::PacketBuffer>(
+                std::move(parsed.packet.value()));//移动构造
+            HandleCommand(std::move(packet)); //交给线程去处理
+            parsed = index > 0
+                ? remote::ParsePacket(
+                    reinterpret_cast<const std::uint8_t*>(buffer.data()),
+                    static_cast<std::size_t>(index))
+                : remote::ParseResult{}; //如果还有数据就再解析一次，如果没有数据了就清空
         }
     }
     
