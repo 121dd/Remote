@@ -146,6 +146,7 @@ struct ParseResult {
     std::optional<PacketBuffer> packet;
 };
 
+//允许这个函数直接定义在 .hpp 头文件里，并被多个 .cpp 包含，而不会因为出现多个相同函数定义导致链接错误。
 inline ParseResult ParsePacket(
     const std::uint8_t* buffer,
     std::size_t length) noexcept {

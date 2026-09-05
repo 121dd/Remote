@@ -19,7 +19,7 @@ struct ScreenRequest{
 };
 
 struct ScreenUpdateHeader{
-    std::int32_t frame_type;
+    std::int32_t frame_type; //类型
     std::int32_t screen_width;
     std::int32_t screen_height;
     std::int32_t x;
@@ -33,6 +33,7 @@ struct ScreenUpdateHeader{
 static_assert(sizeof(ScreenRequest) == 4, "ScreenRequest is part of the wire protocol");
 static_assert(sizeof(ScreenUpdateHeader) == 32, "ScreenUpdateHeader is part of the wire protocol");
 
+//客户端收到服务器发来的屏幕更新数据后，对 ScreenUpdateHeader 做一次完整的“合法性检查”。
 inline bool IsValidScreenUpdate(const ScreenUpdateHeader& header, std::size_t body_length){
     if(header.screen_width <= 0 || header.screen_height <= 0 || header.image_length < 0){
         return false;

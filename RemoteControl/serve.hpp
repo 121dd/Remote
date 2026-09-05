@@ -80,34 +80,37 @@ int GetEncoderClsid(const WCHAR* format, CLSID* pClsid){
 
 //处理屏幕命令：按 64x64 网格比较两帧，只编码覆盖脏块的最小矩形。
 int HandleScreen(const remote::PacketBuffer& pck){
-    const int screen_width = GetSystemMetrics(SM_CXSCREEN);
+    //这三行代码是在获取 Windows 屏幕分辨率，并计算一行图像数据占多少字节。
+    const int screen_width = GetSystemMetrics(SM_CXSCREEN); //GetSystemMetrics() 是 Windows API。
     const int screen_height = GetSystemMetrics(SM_CYSCREEN);
-    const int stride = screen_width * 4;
+    const int stride = screen_width * 4;//计算一行图像数据占多少字节
     if(screen_width <= 0 || screen_height <= 0) return -1;
 
+    //header不是成员变量，而是成员函数
+    //包的长度，不是0，也不是一个屏幕的大小，则这个包不是屏幕的包
     if(pck.header().body_length != 0 &&
        pck.header().body_length != sizeof(ScreenRequest)){
         return -1;
     }
-    bool force_full = false;
+    bool force_full = false; //默认不强制全屏
     if(pck.header().body_length == sizeof(ScreenRequest)){
         ScreenRequest request{};
         memcpy(&request, pck.body(), sizeof(request));
-        force_full = request.force_full != 0;
+        force_full = request.force_full != 0; //客户端是否要求全屏发送
     }
 
-    //使用自顶向下的 32 位 DIB，BitBlt 后可以直接读取连续 BGRA 像素。
-    HDC screen_dc = GetDC(NULL);
-    HDC memory_dc = CreateCompatibleDC(screen_dc);
-    BITMAPINFO bitmap_info{};
-    bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    //使用自顶向下的 32 位 DIB，BitBlt 后可以直接读取连续 BGRA 像素。 Windows 屏幕截图前的 GDI 初始化
+    HDC screen_dc = GetDC(NULL); // 代表屏幕绘图环境
+    HDC memory_dc = CreateCompatibleDC(screen_dc); // 内存中的绘图环境
+    BITMAPINFO bitmap_info{}; //创建画布
+    bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); // 告诉系统：我要什么格式的像素数据
     bitmap_info.bmiHeader.biWidth = screen_width;
     bitmap_info.bmiHeader.biHeight = -screen_height;
     bitmap_info.bmiHeader.biPlanes = 1;
     bitmap_info.bmiHeader.biBitCount = 32;
     bitmap_info.bmiHeader.biCompression = BI_RGB;
     void* pixels = nullptr;
-    HBITMAP screen_bitmap = CreateDIBSection(
+    HBITMAP screen_bitmap = CreateDIBSection( //将画板和画布关联
         screen_dc, &bitmap_info, DIB_RGB_COLORS, &pixels, NULL, 0);
     if(screen_dc == NULL || memory_dc == NULL || screen_bitmap == NULL || pixels == nullptr){
         if(screen_bitmap) DeleteObject(screen_bitmap);
@@ -116,6 +119,7 @@ int HandleScreen(const remote::PacketBuffer& pck){
         return -1;
     }
 
+    //截图
     HGDIOBJ old_bitmap = SelectObject(memory_dc, screen_bitmap);
     const BOOL captured = BitBlt(
         memory_dc, 0, 0, screen_width, screen_height,
@@ -128,20 +132,29 @@ int HandleScreen(const remote::PacketBuffer& pck){
         return -1;
     }
 
+    //当前的屏幕
     std::vector<unsigned char> current_screen(
         static_cast<std::size_t>(stride) * screen_height);
     memcpy(current_screen.data(), pixels, current_screen.size());
     DeleteObject(screen_bitmap);
 
+    //和上一帧 g_previous_screen 比较，找出发生变化的区域
     const bool dimensions_changed =
         g_previous_screen_width != screen_width ||
         g_previous_screen_height != screen_height;
+
+    //如果没有改变且非空，让 previous 指向上一帧像素数据的首地址
     const unsigned char* previous =
         (!dimensions_changed && !g_previous_screen.empty())
             ? g_previous_screen.data() : nullptr;
+        
+    //脏区域检测函数（这个region，可能是全屏，也可能只是部分屏幕
     DirtyRegion region = FindDirtyRegion(
         previous, current_screen.data(), screen_width, screen_height,
         stride, 64, 40);
+    
+    //如果 force_full == true，就不使用刚才 FindDirtyRegion()找到的局部脏区域，而是强制把整个屏幕设置成需要更新。
+    //force_full是客户端强制要求全屏
     if(force_full){
         region = FullFrameRegion(
             screen_width, screen_height,
@@ -154,6 +167,7 @@ int HandleScreen(const remote::PacketBuffer& pck){
     update.frame_type = SCREEN_FRAME_UNCHANGED;
 
     //即使画面没变化也必须回复，否则客户端会一直阻塞在 recv。
+    //如果画面没有变化
     if(!region.has_changes){
         auto packet = remote::PacketBuffer::Build(
             remote::Command::Screen, &update, sizeof(update));
@@ -163,48 +177,61 @@ int HandleScreen(const remote::PacketBuffer& pck){
             static_cast<int>(packet.size())) ? 0 : -1;
     }
 
+    //如果变化了
     update.frame_type = region.full_frame ? SCREEN_FRAME_FULL : SCREEN_FRAME_DIRTY;
     update.x = region.x;
     update.y = region.y;
     update.width = region.width;
     update.height = region.height;
 
+    //找到对应的png编译器
     CLSID png_clsid;
     if(GetEncoderClsid(L"image/png", &png_clsid) == -1) return -1;
 
+    //创建一块 Windows 全局内存。
     HGLOBAL stream_memory = GlobalAlloc(GMEM_MOVEABLE, 0);
     if(stream_memory == NULL) return -1;
+
+    //把内存包装成stream流
     IStream* stream = NULL;
     if(CreateStreamOnHGlobal(stream_memory, TRUE, &stream) != S_OK){
         GlobalFree(stream_memory);
         return -1;
     }
 
+    //直接从 current_screen 中找到 region 左上角对应的像素地址，然后让 Bitmap 使用这块内存。
     Gdiplus::Bitmap patch(
         region.width, region.height, stride,
         PixelFormat32bppRGB, //DIB 的第 4 字节未定义，按 RGB 读取可避免被当成透明 alpha。
         current_screen.data() +
             static_cast<std::size_t>(region.y) * stride +
             static_cast<std::size_t>(region.x) * 4);
+
+    //把 patch 编码成 PNG，并写入 stream
     const Gdiplus::Status encode_status = patch.Save(stream, &png_clsid, NULL);
     if(encode_status != Gdiplus::Ok){
         stream->Release();
         return -1;
     }
 
+    //重新获取内存句柄，在patch.Save会变化
     HGLOBAL current_memory = NULL;
     if(GetHGlobalFromStream(stream, &current_memory) != S_OK){
         stream->Release();
         return -1;
     }
-    STATSTG stream_stat{};
+
+    //获取 stream 的状态
+    STATSTG stream_stat{};//stream_stat.cbSize.QuadPart内部png变化后的字节数
     if(stream->Stat(&stream_stat, STATFLAG_NONAME) != S_OK ||
        stream_stat.cbSize.QuadPart <= 0 ||
        stream_stat.cbSize.QuadPart > SCREEN_MAX_IMAGE_BYTES){
         stream->Release();
         return -1;
     }
-    char* png_data = static_cast<char*>(GlobalLock(current_memory));
+
+    //把 PNG 数据从 HGLOBAL 里“拿成一个可访问的指针”，再得到 PNG 的字节数。
+    char* png_data = static_cast<char*>(GlobalLock(current_memory)); //GlobalLock锁住这块内存
     const int png_size = static_cast<int>(stream_stat.cbSize.QuadPart);
     if(png_data == nullptr){
         if(png_data) GlobalUnlock(current_memory);
@@ -212,15 +239,17 @@ int HandleScreen(const remote::PacketBuffer& pck){
         return -1;
     }
 
+    //且只对屏幕数据才回数据，对于键盘和鼠标的数据就不回数据
+    //这时候packet的数据为包头+屏幕协议数据包头+数据
     update.image_length = png_size;
     std::vector<char> body(sizeof(update) + update.image_length);
     memcpy(body.data(), &update, sizeof(update));
     memcpy(body.data() + sizeof(update), png_data, update.image_length);
     GlobalUnlock(current_memory);
-    stream->Release();
+    stream->Release();//不是为了读取才先放进 stream，而是 GDI+ 需要一个地方来输出 PNG 编码结果；这里选择了内存 Stream，编码完成后再取得它底层的 PNG 字节用于网络发送。
 
     auto packet = remote::PacketBuffer::Build(
-        remote::Command::Screen, body.data(), body.size());
+        remote::Command::Screen, body.data(), body.size()); //这时候packet的数据为包头+屏幕协议数据包头+数据
     const bool sent = SendAll(
         g_connect_socket,
         reinterpret_cast<const char*>(packet.data()),
